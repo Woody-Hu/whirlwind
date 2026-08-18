@@ -20,8 +20,7 @@ import signal
 import time
 from pathlib import Path
 
-from argus.core import SnapshotKind, new_sandbox_id, new_snapshot_id
-from argus.core.errors import ArgusError
+from argus.core import SnapshotKind, new_snapshot_id
 
 from .base import (
     Caps,

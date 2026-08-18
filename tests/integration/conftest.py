@@ -43,4 +43,7 @@ async def llm_upstream(monkeypatch: pytest.MonkeyPatch) -> str:
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True
     await asyncio.wait_for(serve_task, timeout=5)
-    assert seen.get("auth") == f"Bearer {API_KEY_SENTINEL}", "relay key never reached the upstream"
+    # NOTE: no "key was used" assertion here — turn-executing tests prove the
+    # relay end-to-end by asserting the upstream's reply content (it 401s
+    # without the Bearer key); tests that never turn (e.g. MCP-only) share
+    # this fixture and must not be forced through the LLM path.

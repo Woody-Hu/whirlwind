@@ -111,6 +111,49 @@ async def test_full_turn_event_sequence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_reply_still_ends_the_turn() -> None:
+    """A broken LLM upstream must surface as error + turn/end(error), never a stuck turn."""
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+    import uvicorn
+
+    app = FastAPI()
+
+    @app.post("/chat/completions")
+    async def reject():
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
+    task = asyncio.get_running_loop().create_task(server.serve())
+    for _ in range(100):
+        if server.started:
+            break
+        await asyncio.sleep(0.05)
+    port = int(server.servers[0].sockets[0].getsockname()[1])  # type: ignore[index]
+
+    rpc = await _spawn_echo(env={"ECHO_LLM_URL": f"http://127.0.0.1:{port}"})
+    try:
+        await rpc.request("initialize", {"cwd": "/tmp"})
+        recorder = NotificationRecorder()
+        rpc.on_notification(recorder)
+        await rpc.request(
+            "session/prompt", {"sessionId": "s-err", "contentBlocks": content_blocks("doomed")}
+        )
+        types = await _drain_turn(recorder, "s-err")
+        assert types == ["turn/start", "error", "turn/end"]
+        end = [
+            parse_session_event(n)
+            for n in recorder.events
+            if parse_session_event(n) is not None and parse_session_event(n).type == "turn/end"
+        ][-1]
+        assert end.data["reason"]["kind"] == "error"
+    finally:
+        await rpc.close()
+        server.should_exit = True
+        await task
+
+
+@pytest.mark.asyncio
 async def test_seq_monotonic_per_session() -> None:
     rpc = await _spawn_echo()
     try:

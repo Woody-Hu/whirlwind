@@ -94,10 +94,21 @@ class EchoHarness:
         text = "".join(
             b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
         )
-        reply = await self._reply_for(text)
         self._sessions.setdefault(session_id, {"messages": []})["messages"].append(text)
         self._status(session_id, "running")
         await self._emit(session_id, "turn/start", {"input_ref": message_id})
+        # a turn must always end with turn/end — failures surface as error + end(error)
+        try:
+            reply = await self._reply_for(text)
+        except Exception as exc:
+            await self._emit(session_id, "error", {"message": f"reply failed: {exc}"})
+            await self._emit(
+                session_id,
+                "turn/end",
+                {"reason": {"kind": "error", "message": str(exc)}, "usage": {"input": 0, "output": 0}},
+            )
+            self._status(session_id, "idle")
+            return
         if self._chunk_mode == "chars":
             for i in range(0, len(reply), 8):
                 await self._emit(session_id, "assistant/chunk", {"delta": reply[i : i + 8]})

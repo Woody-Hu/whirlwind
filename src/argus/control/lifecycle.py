@@ -7,11 +7,10 @@ them on the event loop.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Awaitable, Callable
 
-from argus.core import AgentSession, SessionStatus
+from argus.core import AgentSession
 from argus.timer.wheel import HierarchicalTimer, TimerHandle
 
 logger = logging.getLogger(__name__)

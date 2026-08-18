@@ -33,5 +33,9 @@ class SeamError(ArgusError):
     code = "argus/seam"
 
 
+class BadRequest(ArgusError):
+    code = "argus/bad-request"
+
+
 class HarnessError(ArgusError):
     code = "argus/harness"

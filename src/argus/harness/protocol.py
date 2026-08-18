@@ -11,8 +11,10 @@ A harness mounts natively when it implements this protocol over stdio
   notification subagent.started/finished {parentSessionId, childSessionId}
 
 Turn lifecycle: after session/prompt is accepted, the harness emits
-session.event notifications for the session; the turn ends when the harness
-reports session.status idle for that session.
+session.event notifications for the session; every turn MUST end with a
+`turn/end` event whose `reason.kind` is "completed" or "error" (failures
+surface, streams terminate), and the turn is closed when the harness reports
+session.status idle for that session.
 
 `HarnessRpc` is the client side used by the SandboxAgent; `echo_server` is the
 reference conformance harness used to drive real-subprocess integration tests.
@@ -24,7 +26,7 @@ import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable
+from typing import Any, Callable
 
 
 @dataclass(slots=True)
