@@ -60,7 +60,11 @@ class DshAdapter(HarnessAdapter):
         sessions_dir = f"{ws}/.argus/sessions"
         components: list[dict] = [
             {"id": "sdk-jsonrpc-server", "name": "@deepseek-ai/dsh-sdk-jsonrpc-server"},
-            {"id": "agent-core", "name": "@deepseek-ai/dsh-agent-spine-demo"},
+            {
+                "id": "agent-core",
+                "name": "@deepseek-ai/dsh-agent-spine-demo",
+                "config": {"workspaceContext": {"maxBytes": 65536}},
+            },
             {"id": "llm-deepseek", "name": "@deepseek-ai/dsh-llm-deepseek"},
             {
                 "id": "sessions",
@@ -92,7 +96,12 @@ class DshAdapter(HarnessAdapter):
             "DSH_AGENTS_HOME": f"{ws}/.argus/agents-home",
         }
         if manifest.llm_relay_url:
+            # The llm-deepseek adapter refuses to run without a key present.
+            # The relay owns the real credential host-side and REPLACES the
+            # Authorization header on egress, so this placeholder is not a
+            # secret and never reaches the upstream provider.
             env["DEEPSEEK_BASE_URL"] = manifest.llm_relay_url
+            env["DEEPSEEK_API_KEY"] = "argus-relay"
         files = {
             ".argus/cordis.yml": _yaml_dump(components),
             ".argus/provisioned-dirs": "\n".join(provisioned_dirs) + "\n",

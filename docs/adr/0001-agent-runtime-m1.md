@@ -16,11 +16,18 @@
 通过 REST API 创建 agent / 会话 / 发起 turn，事件经 SSE 流式返回，LLM 调用经 relay 出网且凭证不进沙箱，
 skill / seam（tool）配置可注入 agent 并生效。
 
-**已验证的可行性**（2026-08-18，本仓库开发沙箱内）：
+**已验证的可行性**（2026-08-18，本仓库开发沙箱内；验收 e2e 复验于同日）：
 
-- `pip install deepseek-harness-sdk`（Python 3.12）可用；SDK 驱动单文件 `dsh-jsonrpc-agent` 运行时（JSON-RPC over stdio）。
+- dsh Python 侧分发为两个源码包：`python/sdk`（`deepseek-harness-sdk`）与 `python/sdk-runtime`
+  （`deepseek-harness-runtime-bin`，承载平台单文件 exe）。**两者均不在 PyPI**——镜像构建从本地
+  checkout 安装（`refs/deepseek-harness`，可用 `ARGUS_DSH_REPO` 覆盖）；exe 由仓库脚本
+  `pnpm exec tsx scripts/build-exe-for-python-sdk.ts` 构建（macOS arm64 / linux x64+arm64）。
 - dsh 运行时 + 真实 DeepSeek API 端到端跑通（`h.run("Reply with exactly: OK")` → `OK` / `completed`）。
 - dsh 依赖环境变量 `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY`，与 sidecar LLM Relay 设计天然契合。
+  注意：llm-deepseek 适配器要求环境里存在 API key 才发请求——沙箱内注入非密钥占位符
+  `DEEPSEEK_API_KEY=argus-relay`，真实凭证仅存在于 Hostlet，由 SecretRelay 在出网时替换
+  Authorization 头（占位符永不到达上游）。
+- LLM 流量为 SSE（`text/event-stream`）：agent 与 Hostlet 两跳 relay 均为未缓冲字节流透传。
 
 ## 2. 关键决策
 

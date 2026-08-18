@@ -8,11 +8,12 @@ from .base import (
     ImageRegistry,
     ImagingError,
     dsh_image_build,
+    dsh_source_root,
     echo_image_build,
 )
 from .local import LocalRegistry
 
 __all__ = [
     "DSH_LAUNCHER_SRC", "ImageBuild", "ImageBundle", "ImageNotFound", "ImageRegistry",
-    "ImagingError", "LocalRegistry", "dsh_image_build", "echo_image_build",
+    "ImagingError", "LocalRegistry", "dsh_image_build", "dsh_source_root", "echo_image_build",
 ]

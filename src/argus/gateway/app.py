@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import tempfile
+import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -151,6 +153,37 @@ def create_app(
             raise NotFound(f"no build recipe for image {name!r} (known: {sorted(recipes)})")
         ref = await deps.images.register(recipe())
         return {"ref": ref}
+
+    # ------------------------------------------------------------ skills
+
+    @app.post("/skills/{name}/{version}")
+    async def upload_skill(name: str, version: str, request: Request) -> dict[str, Any]:
+        """Register a skill the Hostlet stages into workspaces.
+
+        Body is either a SKILL.md document (any text content type) or a zip
+        archive whose root holds SKILL.md (optionally with bundled files).
+        """
+        body = await request.body()
+        if not body:
+            raise BadRequest("skill body is empty")
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp)
+            if body[:2] == b"PK":
+                archive = staged / "skill.zip"
+                archive.write_bytes(body)
+                try:
+                    with zipfile.ZipFile(archive) as zf:
+                        zf.extractall(staged / "skill")
+                except zipfile.BadZipFile as exc:
+                    raise BadRequest(f"skill archive is not a valid zip: {exc}") from exc
+                source = staged / "skill"
+                if not (source / "SKILL.md").is_file():
+                    raise BadRequest("skill archive must contain SKILL.md at its root")
+            else:
+                source = staged / "SKILL.md"
+                source.write_bytes(body)
+            ref = await deps.store.save_skill(name, version, source)
+        return {"name": ref.name, "version": ref.version}
 
     # ------------------------------------------------------------ agents
 

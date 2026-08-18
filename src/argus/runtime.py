@@ -52,7 +52,7 @@ class ArgusRuntime:
         data_dir.mkdir(parents=True, exist_ok=True)
 
         # storage & comms providers
-        self.store = MemoryMetadataStore()
+        self.store = MemoryMetadataStore(skills_dir=data_dir / "skills")
         self.event_log = JSONLEventLog(data_dir / "events")
         self.bus = InProcessEventBus()
 

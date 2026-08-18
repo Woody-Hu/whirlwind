@@ -28,7 +28,7 @@ from typing import Any
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from argus.core import (
     AgentSession,
@@ -320,7 +320,12 @@ class Hostlet:
             return JSONResponse({"ok": True})
 
         @app.api_route("/secret/llm/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-        async def _secret_llm(path: str, request: Request) -> JSONResponse:
+        async def _secret_llm(path: str, request: Request):
+            """SecretRelay: attach the credential and stream bytes through.
+
+            LLM traffic is SSE (`text/event-stream`) as often as JSON; the
+            response is passed through unbuffered with its content-type intact.
+            """
             if not self._api_key:
                 return JSONResponse({"error": "hostlet has no api key"}, status_code=503)
             headers = {
@@ -329,12 +334,25 @@ class Hostlet:
                 if k.lower() not in ("host", "content-length", "authorization", "transfer-encoding")
             }
             headers["Authorization"] = f"Bearer {self._api_key}"
-            upstream = await self._upstream.request(
+            upstream_req = self._upstream.build_request(
                 request.method,
                 f"{self.config.llm_upstream}/{path}",
                 headers=headers,
                 content=await request.body(),
             )
-            if upstream.headers.get("content-type", "").startswith("application/json"):
-                return JSONResponse(upstream.json(), status_code=upstream.status_code)
-            return JSONResponse({"raw": upstream.text}, status_code=upstream.status_code)
+            upstream = await self._upstream.send(upstream_req, stream=True)
+
+            async def _passthrough():
+                try:
+                    async for chunk in upstream.aiter_raw():
+                        yield chunk
+                finally:
+                    await upstream.aclose()
+
+            return StreamingResponse(
+                _passthrough(),
+                status_code=upstream.status_code,
+                headers={
+                    "content-type": upstream.headers.get("content-type", "application/octet-stream")
+                },
+            )

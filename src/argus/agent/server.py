@@ -30,7 +30,7 @@ from typing import Any
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from argus.harness.protocol import (
     HarnessRpc,
@@ -165,19 +165,38 @@ async def stop() -> dict[str, Any]:
 
 
 @AGENT.api_route("/relay/llm/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def relay_llm(path: str, request: Request) -> JSONResponse:
-    """Keyless jump box: the Hostlet SecretRelay owns the credential."""
+async def relay_llm(path: str, request: Request):
+    """Keyless jump box: the Hostlet SecretRelay owns the credential.
+
+    Streams bytes through unbuffered — LLM traffic is SSE as often as JSON.
+    """
     headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length", "authorization")
+        if k.lower() not in ("host", "content-length", "authorization", "transfer-encoding")
     }
-    response = await STATE.client.request(
-        request.method, f"{STATE.llm_upstream}/{path}", headers=headers, content=await request.body()
+    upstream = await STATE.client.send(
+        STATE.client.build_request(
+            request.method,
+            f"{STATE.llm_upstream}/{path}",
+            headers=headers,
+            content=await request.body(),
+        ),
+        stream=True,
     )
-    if response.headers.get("content-type", "").startswith("application/json"):
-        return JSONResponse(response.json(), status_code=response.status_code)
-    return JSONResponse({"raw": response.text}, status_code=response.status_code)
+
+    async def _passthrough():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    return StreamingResponse(
+        _passthrough(),
+        status_code=upstream.status_code,
+        headers={"content-type": upstream.headers.get("content-type", "application/octet-stream")},
+    )
 
 
 def main() -> None:

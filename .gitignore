@@ -12,3 +12,5 @@ data/
 images/
 *.jsonl
 !tests/**/*.jsonl
+refs/
+.pnpm-store/
