@@ -180,6 +180,20 @@ async def _request(
             writer.close()
 
 
+def _parse_header_lines(lines: list[str]) -> dict[str, str]:
+    """Lower-cased header map; blank lines (the head's trailing CRLF) are skipped
+    so no empty-name header ever leaks into a forwarded request."""
+    headers: dict[str, str] = {}
+    for line in lines:
+        if not line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().lower()
+        if key:
+            headers[key] = value.strip()
+    return headers
+
+
 async def _read_response_head(
     reader: asyncio.StreamReader, timeout_s: float
 ) -> tuple[int, dict[str, str]]:
@@ -190,11 +204,7 @@ async def _read_response_head(
     parts = lines[0].split(" ", 2)
     if len(parts) < 2 or not parts[1].isdigit():
         raise ValueError(f"bad status line: {lines[0]!r}")
-    headers: dict[str, str] = {}
-    for line in lines[1:]:
-        key, _, value = line.partition(":")
-        headers[key.strip().lower()] = value.strip()
-    return int(parts[1]), headers
+    return int(parts[1]), _parse_header_lines(lines[1:])
 
 
 async def _read_body(
@@ -249,10 +259,7 @@ async def _read_request(
     parts = lines[0].split(" ")
     if len(parts) < 3:
         raise ValueError(f"bad request line: {lines[0]!r}")
-    headers: dict[str, str] = {}
-    for line in lines[1:]:
-        key, _, value = line.partition(":")
-        headers[key.strip().lower()] = value.strip()
+    headers = _parse_header_lines(lines[1:])
     length = int(headers.get("content-length", "0"))
     body = await reader.readexactly(length) if length else b""
     return parts[0], parts[1], headers, body

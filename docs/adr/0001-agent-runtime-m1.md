@@ -233,14 +233,23 @@ llm-replay 同思路：dsh 官方自带 replay 适配器，回放录制流量，
 
 `pytest tests/benchmark/`（pytest-benchmark，真实计时）：
 
-| 基准 | 指标 | M1 验收线 |
-| --- | --- | --- |
-| 时间轮 vs heapq 基线 | 10k 任务调度+取消吞吐 | 时间轮 ≥ heapq 的 80%（同机对比），且取消 O(1) 优势场景 ≥ 3x |
-| EventBus 扇出 | 10k 事件 / 10 订阅者 | ≥ 20k events/s |
-| EventLog append + 回放 | JSONL 写入与按 seq 读取 | ≥ 5k events/s 写入 |
-| Scheduler 冷启动决策 | 无沙箱 → ensure 完成 | echo harness ≤ 250ms（进程真实启动） |
-| warm 认领 | CAS bind 决策 | p50 ≤ 2ms |
-| E2E turn（dsh + DeepSeek） | POST → 首事件到达 | 记录值，无硬线（受网络支配），回归对比用 |
+| 基准 | 指标 | M1 验收线 | 实测（M2-d，开发沙箱） |
+| --- | --- | --- | --- |
+| 时间轮 vs heapq 基线 | 10k 任务调度+取消吞吐 | 时间轮 ≥ heapq 的 80%（同机对比），且取消 O(1) 优势场景 ≥ 3x | 见 `test_wheel_bench.py`（通过） |
+| EventBus 扇出 | 10k 事件 / 10 订阅者 | ≥ 20k events/s | 1.2M deliveries/s（10k×10，零丢弃） |
+| EventLog append + 回放 | JSONL 写入与按 seq 读取 | ≥ 5k events/s 写入 | 24.8k events/s（含回放断言） |
+| Scheduler 冷启动决策 | 无沙箱 → ensure 完成 | echo harness ≤ 250ms（进程真实启动） | p50 237ms（SandboxAgent 重写为纯 stdlib 后；原 fastapi/uvicorn 版 ~669ms） |
+| warm 认领 | CAS bind 决策 | p50 ≤ 2ms | p50 0.021ms（4 沙箱真实预启动） |
+| E2E turn（dsh + DeepSeek） | POST → 首事件到达 | 记录值，无硬线（受网络支配），回归对比用 | 待 M2-e 记录 |
+
+性能注记（实测驱动）：
+- EventLog 每 append fsync 实测比验收线慢 ~7x，M1 以 flush + 进程生命周期为持久性边界，
+  崩溃持久化留给 durable-log provider 替换（架构 10.3），接口不变。
+- EventBus 同步连发会饿死订阅者（drop-oldest + EventLog 补读是设计行为）；基准按真实
+  publisher 节奏（每 64 事件让步一次）测得零丢弃。
+- SandboxAgent 冷启动由 import 成本支配：fastapi/uvicorn 导入 ~630ms vs 纯 stdlib ~120ms，
+  控制面改为 asyncio 原生 HTTP（Connection: close、close-delimited 流式透传，SSE 安全），
+  每个镜像冷启动直接受益。
 
 基准结果在 CI 输出存档（`benchmark/` 结果 JSON），防止性能劣化无感知。
 
