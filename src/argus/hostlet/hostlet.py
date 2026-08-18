@@ -202,7 +202,18 @@ class Hostlet:
             workspace=workspace,
             env=sandbox_env,
         )
-        instance = await self.driver.create(spec)
+        record = Sandbox(
+            id=sandbox_id,
+            pool_id="default",
+            agent_version_id=version.id,
+            status=SandboxStatus.PROVISIONING,
+        )
+        await self.store.upsert_sandbox(record)
+        await self.driver.create(spec)
+        record.status = SandboxStatus.BINDING
+        record.bound_session_id = session.id
+        record.workspace = str(workspace)
+        await self.store.upsert_sandbox(record)
         managed = _ManagedSandbox(
             sandbox_id=sandbox_id,
             agent_port=agent_port,
@@ -217,14 +228,7 @@ class Hostlet:
         except Exception:
             await self.destroy(sandbox_id)
             raise
-        record = Sandbox(
-            id=sandbox_id,
-            pool_id="default",
-            agent_version_id=version.id,
-            status=SandboxStatus.ACTIVE,
-            bound_session_id=session.id,
-            workspace=str(workspace),
-        )
+        record.status = SandboxStatus.ACTIVE
         await self.store.upsert_sandbox(record)
         session.bound_sandbox_id = sandbox_id
         await self.store.update_session(session)
@@ -248,11 +252,13 @@ class Hostlet:
 
     async def destroy(self, sandbox_id: str) -> None:
         managed = self._sandboxes.pop(sandbox_id, None)
-        if managed is None:
-            return
-        await managed.http.aclose()
-        await self.driver.destroy(sandbox_id)
         record = await self.store.get_sandbox(sandbox_id)
+        if record is not None and record.status == SandboxStatus.ACTIVE:
+            record.status = SandboxStatus.DRAINING
+            await self.store.upsert_sandbox(record)
+        if managed is not None:
+            await managed.http.aclose()
+        await self.driver.destroy(sandbox_id)
         if record is not None:
             record.status = SandboxStatus.TERMINATED
             await self.store.upsert_sandbox(record)

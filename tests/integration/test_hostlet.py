@@ -15,9 +15,6 @@ import time
 from pathlib import Path
 
 import pytest
-import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 
 from argus.bus import InProcessEventBus
 from argus.core import (
@@ -38,9 +35,11 @@ from argus.imaging import LocalRegistry, echo_image_build
 from argus.seam.model import SeamRenderer
 from argus.storage.local import JSONLEventLog
 from argus.storage.memory import MemoryMetadataStore
+from tests.integration.conftest import API_KEY_SENTINEL
+
+# llm_upstream fixture: shared, see tests/integration/conftest.py
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-API_KEY_SENTINEL = "sk-test-secret-do-not-leak"
 
 
 @pytest.fixture(scope="module")
@@ -52,36 +51,6 @@ def echo_registry(tmp_path_factory: pytest.TempPathFactory) -> LocalRegistry:
 
     asyncio.new_event_loop().run_until_complete(_build())
     return registry
-
-
-@pytest.fixture
-async def llm_upstream(monkeypatch: pytest.MonkeyPatch) -> str:
-    """A real local LLM-ish HTTP service: 401 without the Bearer key, 200 with."""
-    monkeypatch.setenv("ARGUS_TEST_KEY", API_KEY_SENTINEL)
-    seen: dict[str, str] = {}
-    app = FastAPI()
-
-    @app.post("/chat/completions")
-    async def completions(request: Request):
-        seen["auth"] = request.headers.get("authorization", "")
-        if seen["auth"] != f"Bearer {API_KEY_SENTINEL}":
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        body = await request.json()
-        seen["model"] = str(body.get("model", ""))
-        return {"choices": [{"message": {"content": "relayed-reply"}}]}
-
-    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
-    server = uvicorn.Server(config)
-    serve_task = asyncio.get_running_loop().create_task(server.serve())
-    for _ in range(200):
-        if server.started:
-            break
-        await asyncio.sleep(0.05)
-    port = int(server.servers[0].sockets[0].getsockname()[1])  # type: ignore[index]
-    yield f"http://127.0.0.1:{port}"
-    server.should_exit = True
-    await asyncio.wait_for(serve_task, timeout=5)
-    assert seen.get("auth") == f"Bearer {API_KEY_SENTINEL}"  # key really used upstream
 
 
 async def _collect_until_turn_end(stream, timeout_s: float = 15.0) -> list[dict]:
