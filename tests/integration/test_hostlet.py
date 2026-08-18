@@ -193,3 +193,87 @@ async def test_skills_are_staged_into_workspace(
             await hostlet.destroy(sandbox.id)
     finally:
         await hostlet.aclose()
+
+
+@pytest.mark.asyncio
+async def test_suspend_snapshot_then_restore_workspace_and_turn(
+    tmp_path: Path,
+    echo_registry: LocalRegistry,
+    llm_upstream: str,
+) -> None:
+    """M2 suspend/restore: data snapshot -> dead process -> fresh sandbox from
+    the snapshot, workspace contents intact, turns flowing again through the
+    relay chain."""
+    store = MemoryMetadataStore()
+    event_log = JSONLEventLog(tmp_path / "events")
+    bus = InProcessEventBus()
+    hostlet = Hostlet(
+        driver=ProcessDriver(snapshots_root=tmp_path / "snapshots"),
+        images=echo_registry,
+        adapters=default_registry(),
+        renderer=SeamRenderer(),
+        store=store,
+        event_log=event_log,
+        bus=bus,
+        config=HostletConfig(
+            data_dir=tmp_path,
+            api_key_env="ARGUS_TEST_KEY",
+            llm_upstream=llm_upstream,
+        ),
+    )
+    await hostlet.start()
+    try:
+        agent = AgentDefinition(id=new_agent_id(), name="sleeper")
+        await store.create_agent(agent)
+        version = AgentVersion(
+            id=new_version_id(),
+            agent_id=agent.id,
+            version="1.0.0",
+            harness="echo",
+            image_ref="echo",
+        )
+        await store.create_version(version)
+        session = AgentSession(id=new_session_id(), agent_id=agent.id, agent_version_id=version.id)
+        await store.create_session(session)
+
+        first = await hostlet.ensure(session, version)
+        old_workspace = Path(first.workspace)
+        (old_workspace / "harness-state.jsonl").write_text('{"v":1}\n{"v":2}\n')  # harness-persisted state
+
+        # -- suspend: snapshot taken, process gone, session unbound
+        snapshot = await hostlet.suspend(first.id)
+        assert snapshot.kind.value == "data"
+        assert snapshot.merkle and snapshot.size > 0
+        assert snapshot.manifest["session_id"] == session.id
+        assert await store.latest_session_snapshot(session.id) is not None
+
+        record = await store.get_sandbox(first.id)
+        assert record is not None and record.status == SandboxStatus.SUSPENDED
+        assert record.bound_session_id is None
+        session = await store.get_session(session.id)
+        assert session is not None and session.bound_sandbox_id is None
+        assert not old_workspace.exists()  # data lives in the snapshot, not the dead workspace
+        with pytest.raises(Exception):
+            await hostlet.turn(first.id, "gone")
+
+        # -- restore: fresh sandbox from the snapshot, same session, state intact
+        second = await hostlet.restore(session, version)
+        assert second.id != first.id
+        assert second.status == SandboxStatus.ACTIVE
+        session = await store.get_session(session.id)
+        assert session is not None and session.bound_sandbox_id == second.id
+        assert (Path(second.workspace) / "harness-state.jsonl").read_text() == '{"v":1}\n{"v":2}\n'
+        old = await store.get_sandbox(first.id)
+        assert old is not None and old.status == SandboxStatus.TERMINATED
+
+        # -- the restored sandbox answers turns through the real relay chain
+        stream = await bus.subscribe(f"sessions.{session.id}.stream")
+        await hostlet.turn(second.id, "after restore")
+        events = await _collect_until_turn_end(stream)
+        assert events[-1]["type"] == "turn/end"
+        final_text = [e for e in events if e["type"] == "assistant/message"][-1]["data"]["message"]["content"][0]["text"]
+        assert final_text == "relayed-reply"
+
+        await hostlet.destroy(second.id)
+    finally:
+        await hostlet.aclose()

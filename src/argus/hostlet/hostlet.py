@@ -35,11 +35,14 @@ from argus.core import (
     AgentVersion,
     Sandbox,
     SandboxStatus,
+    SessionStatus,
     SkillRef,
+    Snapshot,
+    SnapshotKind,
     new_sandbox_id,
 )
-from argus.core.errors import ArgusError, NotFound
-from argus.drivers import SandboxDriver, SandboxSpec
+from argus.core.errors import ArgusError, Conflict, NotFound
+from argus.drivers import SandboxDriver, SandboxSpec, SnapshotArtifact
 from argus.harness.adapter import AdapterRegistry
 from argus.imaging import ImageRegistry
 from argus.seam.model import SeamRenderer
@@ -73,6 +76,19 @@ def _alloc_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _as_artifact(snapshot: Snapshot) -> SnapshotArtifact:
+    """Rebuild the driver-level artifact handle from the stored domain record."""
+    return SnapshotArtifact(
+        snapshot_id=snapshot.manifest.get("sandbox_id", snapshot.subject),
+        subject=snapshot.subject,
+        kind=snapshot.kind,
+        path=Path(snapshot.location),
+        manifest=snapshot.manifest,
+        size=snapshot.size,
+        merkle=snapshot.merkle,
+    )
 
 
 class Hostlet:
@@ -140,13 +156,28 @@ class Hostlet:
 
     # ---------------------------------------------------------------- api
 
-    async def ensure(self, session: AgentSession, version: AgentVersion) -> Sandbox:
+    async def ensure(
+        self,
+        session: AgentSession,
+        version: AgentVersion,
+        *,
+        from_snapshot: Snapshot | None = None,
+    ) -> Sandbox:
         sandbox_id = new_sandbox_id()
         bundle = await self.images.resolve(version.image_ref)
         adapter = self.adapters.adapter_for(version.harness)
         workspace = self.config.data_dir / "sandboxes" / sandbox_id / "ws"
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / ".argus").mkdir(parents=True, exist_ok=True)
+
+        if from_snapshot is not None:
+            # Seed harness/user state from the snapshot BEFORE the fresh plan
+            # files are written: the plan (ports, sandbox ids, workspace paths)
+            # is per-sandbox and must win over the snapshot's stale copies.
+            artifact = _as_artifact(from_snapshot)
+            if not artifact.path.is_dir():
+                raise HostletError(f"snapshot artifact missing: {artifact.path}")
+            shutil.copytree(artifact.path, workspace, symlinks=True, dirs_exist_ok=True)
 
         # stage skills from the resource registry into the workspace
         skills: list[tuple[SkillRef, str]] = []
@@ -262,6 +293,69 @@ class Hostlet:
         if record is not None:
             record.status = SandboxStatus.TERMINATED
             await self.store.upsert_sandbox(record)
+
+    # ------------------------------------------------- suspend / restore (M2)
+
+    async def suspend(self, sandbox_id: str) -> Snapshot:
+        """Suspend = data checkpoint + process teardown (ADR conflict #6).
+
+        The process driver cannot freeze memory, so a suspended sandbox is an
+        dead process plus a content-addressed workspace snapshot. Harness
+        state survives inside the snapshot to the extent its persistence
+        files live in the workspace (dsh: session JSONL under .argus/sessions).
+        """
+        managed = self._get(sandbox_id)
+        record = await self.store.get_sandbox(sandbox_id)
+        if record is None or record.status != SandboxStatus.ACTIVE:
+            raise Conflict(f"sandbox {sandbox_id} is not active; cannot suspend")
+        record.status = SandboxStatus.SNAPSHOTTING
+        await self.store.upsert_sandbox(record)
+
+        artifact = await self.driver.checkpoint(sandbox_id, SnapshotKind.DATA)
+        snapshot = Snapshot(
+            kind=SnapshotKind.DATA,
+            subject=sandbox_id,
+            manifest={
+                "session_id": managed.session_id,
+                "sandbox_id": sandbox_id,
+                "agent_version_id": record.agent_version_id,
+                "harness": managed.harness,
+                "files": artifact.manifest.get("files"),
+            },
+            location=str(artifact.path),
+            size=artifact.size,
+            merkle=artifact.merkle,
+        )
+        await self.store.save_snapshot(snapshot)
+
+        self._sandboxes.pop(sandbox_id, None)
+        await managed.http.aclose()
+        await self.driver.destroy(sandbox_id)
+        if record.workspace is not None:
+            shutil.rmtree(record.workspace, ignore_errors=True)  # data lives in the snapshot now
+        record.status = SandboxStatus.SUSPENDED
+        record.bound_session_id = None
+        record.last_snapshot_id = artifact.snapshot_id
+        record.workspace = None
+        await self.store.upsert_sandbox(record)
+
+        session = await self.store.get_session(managed.session_id)
+        if session is not None and session.bound_sandbox_id == sandbox_id:
+            session.bound_sandbox_id = None
+            await self.store.update_session(session)
+        return snapshot
+
+    async def restore(self, session: AgentSession, version: AgentVersion) -> Sandbox:
+        """Resume: a fresh sandbox booted from the session's latest snapshot."""
+        snapshot = await self.store.latest_session_snapshot(session.id)
+        if snapshot is None:
+            raise NotFound(f"session {session.id} has no snapshot to restore from")
+        previous = await self.store.get_sandbox(snapshot.manifest.get("sandbox_id", ""))
+        sandbox = await self.ensure(session, version, from_snapshot=snapshot)
+        if previous is not None and previous.status == SandboxStatus.SUSPENDED:
+            previous.status = SandboxStatus.TERMINATED
+            await self.store.upsert_sandbox(previous)
+        return sandbox
 
     def _get(self, sandbox_id: str) -> _ManagedSandbox:
         try:

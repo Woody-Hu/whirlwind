@@ -60,7 +60,7 @@ class ArgusRuntime:
         self.wheel = HierarchicalTimer(tick_ms=config.wheel_tick_ms)
         self.images = LocalRegistry(data_dir / "images")
         self.hostlet = Hostlet(
-            driver=ProcessDriver(),
+            driver=ProcessDriver(snapshots_root=data_dir / "snapshots"),
             images=self.images,
             adapters=default_registry(),
             renderer=SeamRenderer(),
