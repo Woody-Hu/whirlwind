@@ -149,6 +149,14 @@ async def test_cli_full_flow(server: str) -> None:
     jobs = await _run_cli("cron", "list", env_extra=env)
     assert cron_id in jobs
 
+    # suspend/resume via CLI: snapshot + restored sandbox, then a live turn
+    suspended = await _run_cli("session", "suspend", session_id, env_extra=env)
+    assert "suspended" in suspended
+    resumed = await _run_cli("session", "resume", session_id, env_extra=env)
+    assert "running" in resumed
+    again = await _run_cli("session", "send", session_id, "back again", "--stream", env_extra=env)
+    assert "relayed-reply" in again
+
     # error surface: unknown session exits non-zero with the server's message
     with pytest.raises(AssertionError):
         await _run_cli("session", "send", "ses_missing", "nope", env_extra=env)

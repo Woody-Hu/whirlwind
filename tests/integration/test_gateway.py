@@ -360,3 +360,45 @@ async def _wait_for_turn(client: httpx.AsyncClient, session_id: str) -> list[dic
             return events
         await asyncio.sleep(0.1)
     return []
+
+
+@pytest.mark.asyncio
+async def test_session_suspend_resume_over_rest(gateway: httpx.AsyncClient) -> None:
+    """REST-level suspend/resume: snapshot taken, session suspended, resumed
+    sandbox answers a new turn on the same session."""
+    await _build_echo_image(gateway)
+    await _create_echo_agent(gateway, "suspend-agent")
+    session = (await gateway.post("/sessions", json={"agent_name": "suspend-agent"})).json()
+    events = await _run_turn_to_end(gateway, session["id"], "before suspend")
+    assert events[-1]["type"] == "turn/end"
+
+    # wait for the idle status to land before suspending
+    async def idle() -> bool:
+        return (await gateway.get(f"/sessions/{session['id']}")).json()["status"] == "idle"
+
+    assert await _wait_until(idle), "session never went idle"
+
+    suspended = (await gateway.post(f"/sessions/{session['id']}/suspend")).json()
+    assert suspended["status"] == "suspended"
+    assert suspended["bound_sandbox_id"] is None
+
+    # a suspended session refuses turns until resumed
+    rejected = await gateway.post(f"/sessions/{session['id']}/turns", json={"text": "no"})
+    assert rejected.status_code == 409
+
+    resumed = (await gateway.post(f"/sessions/{session['id']}/resume")).json()
+    assert resumed["status"] == "running"
+    assert resumed["bound_sandbox_id"]
+
+    # the restored session continues: seq keeps growing on the same durable log
+    before = len((await gateway.get(f"/sessions/{session['id']}/events")).json())
+    response = await gateway.post(f"/sessions/{session['id']}/turns", json={"text": "after resume"})
+    assert response.status_code == 200, response.text
+
+    async def grew() -> bool:
+        events = (await gateway.get(f"/sessions/{session['id']}/events")).json()
+        return len(events) > before and events[-1]["type"] == "turn/end"
+
+    assert await _wait_until(grew), "post-resume turn never completed"
+    closed = (await gateway.post(f"/sessions/{session['id']}/close")).json()
+    assert closed["status"] == "closed"

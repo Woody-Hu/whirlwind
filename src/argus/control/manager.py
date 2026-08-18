@@ -107,6 +107,49 @@ class SessionManager:
             await self.hostlet.destroy(session.bound_sandbox_id)
         return session
 
+    # ------------------------------------------------------ suspend/resume
+
+    async def suspend_session(self, session_id: str) -> AgentSession:
+        """IDLE -> SUSPENDING -> SUSPENDED: data snapshot, process teardown.
+
+        Only idle sessions suspend — a running turn's outcome must not be
+        truncated by a snapshot. A failed suspend closes the session (the only
+        machine-legal exit from SUSPENDING) rather than leave it ambiguous.
+        """
+        session = await self.get_session(session_id)
+        lock = self._dispatch_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            await self._transition(session, SessionStatus.SUSPENDING)
+            self.lifecycle.cancel_all(session.id)
+            try:
+                if session.bound_sandbox_id is not None:
+                    await self.hostlet.suspend(session.bound_sandbox_id)
+            except Exception:
+                logger.exception("suspend failed for %s; closing", session_id)
+                await self.close_session(session_id)
+                raise
+            await self._transition(session, SessionStatus.SUSPENDED)
+        return session
+
+    async def resume_session(self, session_id: str) -> AgentSession:
+        """SUSPENDED -> RESUMING -> RUNNING: fresh sandbox from the snapshot."""
+        session = await self.get_session(session_id)
+        lock = self._dispatch_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            await self._transition(session, SessionStatus.RESUMING)
+            version = await self.store.get_version(session.agent_version_id)
+            if version is None:
+                raise NotFound(f"version {session.agent_version_id}")
+            try:
+                await self.hostlet.restore(session, version)
+            except Exception:
+                logger.exception("resume failed for %s; closing", session_id)
+                await self.close_session(session_id)
+                raise
+            await self._transition(session, SessionStatus.RUNNING)
+            self.lifecycle.arm_max_duration(session)
+        return session
+
     # ---------------------------------------------------------- status pump
 
     async def _on_harness_status(self, session_id: str, status: str) -> None:

@@ -128,6 +128,12 @@ def cmd_session_send(args: argparse.Namespace) -> None:
         _stream_events(_base_url(args), args.session)
 
 
+def cmd_session_lifecycle(args: argparse.Namespace) -> None:
+    with _client(args) as client:
+        session = _check(client.post(f"/sessions/{args.session}/{args.action}"))
+    print(f"session {session['id']}: {session['status']}")
+
+
 def _stream_events(base_url: str, session_id: str) -> None:
     with httpx.Client(base_url=base_url, timeout=None) as client:
         with client.stream("GET", f"/sessions/{session_id}/stream") as response:
@@ -241,6 +247,10 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("session")
     se.add_argument("--from-seq", type=int, default=0)
     se.set_defaults(func=cmd_session_events)
+    for action in ("suspend", "resume", "close"):
+        sl = session_sub.add_parser(action)
+        sl.add_argument("session")
+        sl.set_defaults(func=cmd_session_lifecycle, action=action)
 
     cron = sub.add_parser("cron")
     cron_sub = cron.add_subparsers(dest="cron_command", required=True)

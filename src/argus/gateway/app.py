@@ -276,6 +276,14 @@ def create_app(
     async def close_session(session_id: str) -> dict[str, Any]:
         return (await deps.manager.close_session(session_id)).model_dump()
 
+    @app.post("/sessions/{session_id}/suspend")
+    async def suspend_session(session_id: str) -> dict[str, Any]:
+        return (await deps.manager.suspend_session(session_id)).model_dump()
+
+    @app.post("/sessions/{session_id}/resume")
+    async def resume_session(session_id: str) -> dict[str, Any]:
+        return (await deps.manager.resume_session(session_id)).model_dump()
+
     @app.get("/sessions/{session_id}/events")
     async def read_events(session_id: str, from_seq: int = 0, limit: int = 1000) -> list[dict[str, Any]]:
         return [e.model_dump() for e in await deps.event_log.read(session_id, from_seq, limit)]
