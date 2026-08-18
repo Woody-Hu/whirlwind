@@ -6,7 +6,7 @@ import pytest
 
 from argus.core import AgentDefinition, AgentSession, AgentVersion, CronJob, SkillRef, new_session_id
 from argus.core.errors import Conflict, NotFound
-from argus.storage import JSONLEventLog, LocalObjectStore, MemoryKVStore, MemoryLocks, MemoryMetadataStore
+from argus.storage import WALEventLog, LocalObjectStore, MemoryKVStore, MemoryLocks, MemoryMetadataStore
 
 
 async def test_metadata_agent_crud_and_name_uniqueness(tmp_path):
@@ -113,7 +113,7 @@ async def test_object_store_roundtrip_and_escape_guard(tmp_path):
 
 
 async def test_event_log_seq_monotonic_and_replay(tmp_path):
-    log = JSONLEventLog(tmp_path / "events")
+    log = WALEventLog(tmp_path / "events")
     e1 = await log.append("ses_1", "turn/start", {"input": "hello"})
     e2 = await log.append("ses_1", "assistant/chunk", {"delta": "wo"})
     e3 = await log.append("ses_1", "turn/end", {"usage": {}})
@@ -132,7 +132,8 @@ async def test_event_log_seq_monotonic_and_replay(tmp_path):
 
     # reopen: seq continues from disk (durability across instances)
     log.close()
-    log2 = JSONLEventLog(tmp_path / "events")
+    log2 = WALEventLog(tmp_path / "events")
     assert await log2.last_seq("ses_1") == 23
     e = await log2.append("ses_1", "turn/start")
     assert e.seq == 24
+    log2.close()

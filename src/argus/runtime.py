@@ -21,7 +21,7 @@ from argus.harness.adapter import default_registry
 from argus.hostlet import Hostlet, HostletConfig
 from argus.imaging import LocalRegistry
 from argus.seam.model import SeamRenderer
-from argus.storage.local import JSONLEventLog
+from argus.storage.wal_eventlog import WALEventLog
 from argus.storage.memory import MemoryKVStore, MemoryMetadataStore
 from argus.timer.wheel import HierarchicalTimer
 
@@ -54,7 +54,7 @@ class ArgusRuntime:
 
         # storage & comms providers
         self.store = MemoryMetadataStore(skills_dir=data_dir / "skills")
-        self.event_log = JSONLEventLog(data_dir / "events")
+        self.event_log = WALEventLog(data_dir / "events")
         self.bus = InProcessEventBus()
 
         # timer + imaging + data plane
@@ -126,3 +126,4 @@ class ArgusRuntime:
         await self.wheel.stop()
         await self.hostlet.aclose()
         await self.mcp_executor.aclose()
+        self.event_log.close()

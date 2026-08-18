@@ -22,7 +22,7 @@ from argus.harness.adapter import default_registry
 from argus.hostlet import Hostlet, HostletConfig
 from argus.imaging import LocalRegistry, echo_image_build
 from argus.seam.model import SeamRenderer
-from argus.storage.local import JSONLEventLog
+from argus.storage.wal_eventlog import WALEventLog
 from argus.storage.memory import MemoryKVStore, MemoryMetadataStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -55,7 +55,7 @@ async def test_warm_claim_p50(
         adapters=default_registry(),
         renderer=SeamRenderer(),
         store=store,
-        event_log=JSONLEventLog(tmp_path / "events"),
+        event_log=WALEventLog(tmp_path / "events"),
         bus=bus,
         config=HostletConfig(
             data_dir=tmp_path,

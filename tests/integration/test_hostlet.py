@@ -33,7 +33,7 @@ from argus.harness.adapter import default_registry
 from argus.hostlet import Hostlet, HostletConfig
 from argus.imaging import LocalRegistry, echo_image_build
 from argus.seam.model import SeamRenderer
-from argus.storage.local import JSONLEventLog
+from argus.storage.wal_eventlog import WALEventLog
 from argus.storage.memory import MemoryMetadataStore
 from tests.integration.conftest import API_KEY_SENTINEL
 
@@ -73,7 +73,7 @@ async def test_ensure_turn_events_relay_destroy(
     llm_upstream: str,
 ) -> None:
     store = MemoryMetadataStore()
-    event_log = JSONLEventLog(tmp_path / "events")
+    event_log = WALEventLog(tmp_path / "events")
     bus = InProcessEventBus()
     hostlet = Hostlet(
         driver=ProcessDriver(),
@@ -163,7 +163,7 @@ async def test_skills_are_staged_into_workspace(
         adapters=default_registry(),
         renderer=SeamRenderer(),
         store=store,
-        event_log=JSONLEventLog(tmp_path / "events"),
+        event_log=WALEventLog(tmp_path / "events"),
         bus=bus,
         config=HostletConfig(data_dir=tmp_path / "data"),
     )
@@ -205,7 +205,7 @@ async def test_suspend_snapshot_then_restore_workspace_and_turn(
     the snapshot, workspace contents intact, turns flowing again through the
     relay chain."""
     store = MemoryMetadataStore()
-    event_log = JSONLEventLog(tmp_path / "events")
+    event_log = WALEventLog(tmp_path / "events")
     bus = InProcessEventBus()
     hostlet = Hostlet(
         driver=ProcessDriver(snapshots_root=tmp_path / "snapshots"),

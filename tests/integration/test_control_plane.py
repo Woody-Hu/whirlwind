@@ -28,7 +28,7 @@ from argus.harness.adapter import default_registry
 from argus.hostlet import Hostlet, HostletConfig
 from argus.imaging import LocalRegistry, echo_image_build
 from argus.seam.model import SeamRenderer
-from argus.storage.local import JSONLEventLog
+from argus.storage.wal_eventlog import WALEventLog
 from argus.storage.memory import MemoryKVStore, MemoryMetadataStore
 from argus.timer.wheel import HierarchicalTimer
 
@@ -63,7 +63,7 @@ async def test_session_lifecycle_with_idle_timeout(
 ) -> None:
     store = MemoryMetadataStore()
     bus = InProcessEventBus()
-    event_log = JSONLEventLog(tmp_path / "events")
+    event_log = WALEventLog(tmp_path / "events")
     hostlet = Hostlet(
         driver=ProcessDriver(),
         images=echo_registry,
@@ -143,7 +143,7 @@ async def test_second_turn_reuses_sandbox(
 ) -> None:
     store = MemoryMetadataStore()
     bus = InProcessEventBus()
-    event_log = JSONLEventLog(tmp_path / "events")
+    event_log = WALEventLog(tmp_path / "events")
     hostlet = Hostlet(
         driver=ProcessDriver(),
         images=echo_registry,
@@ -230,7 +230,7 @@ async def test_warm_pool_claim_beats_cold_start(
         adapters=default_registry(),
         renderer=SeamRenderer(),
         store=store,
-        event_log=JSONLEventLog(tmp_path / "events"),
+        event_log=WALEventLog(tmp_path / "events"),
         bus=bus,
         config=HostletConfig(
             data_dir=tmp_path,
