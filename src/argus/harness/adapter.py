@@ -50,6 +50,43 @@ class EchoAdapter(HarnessAdapter):
 
 # --------------------------------------------------------------------- dsh
 
+# Adopt-or-create shim injected next to the rendered cordis.yml and loaded by
+# relative path. The stock sdk-jsonrpc-server always creates a FRESH live
+# session on session/prompt; when a persisted JSONL log already owns that
+# identity (a sandbox booted from a snapshot) the backend rejects the turn as
+# an id collision. The shim mirrors the official apiproxy semantics
+# (api-proxy.ts): a session id with a materialized persisted log is ADOPTED
+# via ctx.agents.resume, so the conversation continues across sandbox
+# reincarnations with no dsh source patch.
+DSH_RESUME_SHIM_MJS = """\
+// argus adopt-or-create shim (see harness/adapter.py for rationale)
+export const name = 'argus-resume-shim'
+export const inject = ['agents', 'sessionPersistence']
+
+export function apply(ctx) {
+  const registry = ctx.agents
+  const originalCreate = registry.create.bind(registry)
+  registry.create = async (options) => {
+    const sessionId = options?.sessionId
+    if (sessionId !== undefined) {
+      const persistence = ctx.get('sessionPersistence')
+      const stored = persistence === undefined
+        ? undefined
+        : (await persistence.list()).find((h) => String(h.id) === String(sessionId))
+      if (stored !== undefined) {
+        return registry.resume({
+          resumeSessionId: sessionId,
+          agentOptions: options.agentOptions ?? {},
+        })
+      }
+    }
+    return originalCreate(options)
+  }
+  ctx.effect(() => () => { registry.create = originalCreate })
+}
+"""
+
+
 class DshAdapter(HarnessAdapter):
     """Renders the manifest as a dsh cordis component list (ADR D5 low layer)."""
 
@@ -73,6 +110,7 @@ class DshAdapter(HarnessAdapter):
             },
             {"id": "session-checkpoints", "name": "@deepseek-ai/dsh-session-checkpoint-policy"},
             {"id": "subprocess", "name": "@deepseek-ai/dsh-subprocess-local"},
+            {"id": "resume-shim", "name": "./argus-resume-shim.mjs"},
         ]
         provisioned_dirs = [sessions_dir]
         for binding in manifest.seams:
@@ -104,6 +142,7 @@ class DshAdapter(HarnessAdapter):
             env["DEEPSEEK_API_KEY"] = "argus-relay"
         files = {
             ".argus/cordis.yml": _yaml_dump(components),
+            ".argus/argus-resume-shim.mjs": DSH_RESUME_SHIM_MJS,
             ".argus/provisioned-dirs": "\n".join(provisioned_dirs) + "\n",
         }
         return PreparedHarness(env=env, files=files, session_root=sessions_dir)

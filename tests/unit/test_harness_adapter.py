@@ -89,6 +89,21 @@ def test_dsh_adapter_relay_url_becomes_base_url() -> None:
     assert prepared.env["DEEPSEEK_BASE_URL"] == "http://127.0.0.1:7712/relay/llm"
 
 
+def test_dsh_adapter_injects_adopt_or_create_shim() -> None:
+    """Snapshot continuity: a persisted session log must be ADOPTED via resume,
+    not collided with a fresh same-id live session (the stock sdk-jsonrpc-server
+    has no resume path of its own)."""
+    prepared = DshAdapter().prepare(_manifest(_version("dsh", [])))
+    cordis = prepared.files[".argus/cordis.yml"]
+    assert "name: './argus-resume-shim.mjs'" in cordis
+    shim = prepared.files[".argus/argus-resume-shim.mjs"]
+    assert "export const inject = ['agents', 'sessionPersistence']" in shim
+    assert "registry.resume" in shim
+    # adopt decision comes from the persisted log, never a control-plane flag:
+    # no resumeSessionId wiring may creep back into the rendered config
+    assert "resumeSessionId:" not in cordis
+
+
 def test_dsh_adapter_mounts_skills_component() -> None:
     skills = [SkillRef(name="pdf-tools", version="1.2.0")]
     prepared = DshAdapter().prepare(_manifest(_version("dsh", []), skills=[(skills[0], "/stage/pdf-tools")]))

@@ -101,6 +101,15 @@ M1 内置 seam 集（对齐 dsh 能力，全部真实生效）：`fs.v1`、`shel
 `memory.v1`（workspace 内持久目录）。Skill 注入：skill 包解包至 workspace `.argus/skills/`，
 dsh 侧通过 filesystem skill provider 装载（dsh `skill-filesystem` 机制），模型可调用。
 
+**快照续播（suspend/resume 的 harness 侧）—— adopt-or-create shim**：dsh 原生
+sdk-jsonrpc-server 对 `session/prompt` 一律新建 live session；快照恢复的沙箱里同 id 的
+持久化 JSONL log 与 fresh create 冲突（该 turn 以 id collision 告终，实测复现）。argus 在
+渲染的 cordis.yml 旁注入 `argus-resume-shim.mjs`（相对路径加载；pkg-SEA exe 实测支持运行时
+动态 import）：包装 `ctx.agents.create`，先查 `sessionPersistence.list()`——已物化的 id 走官方
+`ctx.agents.resume`（与 dsh apiproxy `api-proxy.ts` 同款语义），否则原样 create。续播决策完全由
+磁盘状态（会话日志存在性）决定，与控制面标记解耦：InjectionManifest 不携带 resume 语义，
+fresh boot 与 snapshot boot 走同一条渲染路径。
+
 ### D6 镜像库（架构未覆盖，新增设计）
 
 ```python
@@ -240,7 +249,8 @@ llm-replay 同思路：dsh 官方自带 replay 适配器，回放录制流量，
 | EventLog append + 回放 | JSONL 写入与按 seq 读取 | ≥ 5k events/s 写入 | 24.8k events/s（含回放断言） |
 | Scheduler 冷启动决策 | 无沙箱 → ensure 完成 | echo harness ≤ 250ms（进程真实启动） | p50 237ms（SandboxAgent 重写为纯 stdlib 后；原 fastapi/uvicorn 版 ~669ms） |
 | warm 认领 | CAS bind 决策 | p50 ≤ 2ms | p50 0.021ms（4 沙箱真实预启动） |
-| E2E turn（dsh + DeepSeek） | POST → 首事件到达 | 记录值，无硬线（受网络支配），回归对比用 | 待 M2-e 记录 |
+| E2E turn（dsh + DeepSeek） | POST → 首事件到达 | 记录值，无硬线（受网络支配），回归对比用 | 3 用例 37.6s 全通过（挂载 + 工具/技能 + 快照续播）；首事件未单独计时 |
+| suspend/resume（dsh + DeepSeek e2e） | 控制面时延（不含 LLM turn） | 记录值 | suspend 0.05s / resume 0.59s（含新沙箱 ensure + 快照恢复 + shim 续播） |
 
 性能注记（实测驱动）：
 - EventLog 每 append fsync 实测比验收线慢 ~7x，M1 以 flush + 进程生命周期为持久性边界，
@@ -250,6 +260,9 @@ llm-replay 同思路：dsh 官方自带 replay 适配器，回放录制流量，
 - SandboxAgent 冷启动由 import 成本支配：fastapi/uvicorn 导入 ~630ms vs 纯 stdlib ~120ms，
   控制面改为 asyncio 原生 HTTP（Connection: close、close-delimited 流式透传，SSE 安全），
   每个镜像冷启动直接受益。
+- 快照续播正确性由 e2e 证明（`test_dsh_snapshot_resume_continuity`）：turn1 种入随机密钥 →
+  suspend（数据快照 + 沙箱工作区拆除）→ resume（全新沙箱）→ turn2 模型仅凭 dsh 持久化会话
+  日志（`.argus/sessions` JSONL 随快照恢复）回忆出密钥；两次 turn 间的 argus 进程内状态为零。
 
 基准结果在 CI 输出存档（`benchmark/` 结果 JSON），防止性能劣化无感知。
 

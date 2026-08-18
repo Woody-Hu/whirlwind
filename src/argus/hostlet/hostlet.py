@@ -168,7 +168,13 @@ class Hostlet:
         sandbox_id = new_sandbox_id()
         bundle = await self.images.resolve(version.image_ref)
         adapter = self.adapters.adapter_for(version.harness)
-        workspace = self.config.data_dir / "sandboxes" / sandbox_id / "ws"
+        if from_snapshot is not None and from_snapshot.manifest.get("workspace"):
+            # Resume at the SAME absolute path the harness persisted (dsh records
+            # cwd in its session log and rejects a same-id session at another
+            # cwd); suspend tore this dir down, so the snapshot re-seeds it.
+            workspace = Path(str(from_snapshot.manifest["workspace"]))
+        else:
+            workspace = self.config.data_dir / "sandboxes" / sandbox_id / "ws"
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / ".argus").mkdir(parents=True, exist_ok=True)
 
@@ -340,6 +346,7 @@ class Hostlet:
                 "sandbox_id": sandbox_id,
                 "agent_version_id": record.agent_version_id,
                 "harness": managed.harness,
+                "workspace": str(managed.workspace),
                 "files": artifact.manifest.get("files"),
             },
             location=str(artifact.path),

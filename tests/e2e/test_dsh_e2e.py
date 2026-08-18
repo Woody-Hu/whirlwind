@@ -75,11 +75,13 @@ class _Stack:
         pytest.fail(f"session {session_id} never returned to idle")
 
     async def turn(self, session_id: str, text: str) -> list[dict]:
+        prior = (await self.client.get(f"/sessions/{session_id}/events")).json()
+        start_seq = prior[-1]["seq"] if prior else 0
         response = await self.client.post(f"/sessions/{session_id}/turns", json={"text": text})
         assert response.status_code == 200, response.text
         deadline = time.monotonic() + TURN_TIMEOUT_S
         while time.monotonic() < deadline:
-            events = (await self.client.get(f"/sessions/{session_id}/events")).json()
+            events = (await self.client.get(f"/sessions/{session_id}/events?from_seq={start_seq + 1}")).json()
             if any(e["type"] == "turn/end" for e in events):
                 return events
             await asyncio.sleep(0.3)
@@ -200,4 +202,54 @@ async def test_dsh_skill_configured_into_agent(stack: _Stack) -> None:
     cordis = (workspace / ".argus" / "cordis.yml").read_text()
     assert "@deepseek-ai/dsh-skill-filesystem" in cordis
     assert ".argus/skills" in cordis
+    await stack.wait_idle(session["id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(900)
+async def test_dsh_snapshot_resume_continuity(stack: _Stack) -> None:
+    """M2-e acceptance: suspend (data snapshot + teardown) -> resume (fresh
+    sandbox seeded from the snapshot) and the dsh conversation continues.
+
+    Continuity proof: a secret planted in turn 1 must still be known after the
+    round-trip — the model can only answer from dsh's persisted session state
+    (.argus/sessions JSONL restored into the new sandbox), never from argus
+    memory (the process sandbox is destroyed between the two turns).
+    """
+    await _create_dsh_agent(stack, "dsh-e2e-suspend", seams=[{"seam": "fs.v1", "provider": "sandbox-fs"}])
+    session = (await stack.client.post("/sessions", json={"agent_name": "dsh-e2e-suspend"})).json()
+
+    secret = f"mango-{int(time.time())}"
+    events = await stack.turn(
+        session["id"],
+        f"Remember this secret word for the rest of our conversation: {secret}. "
+        "Just reply ACK.",
+    )
+    assert "ACK" in _Stack.assistant_text(events)
+    await stack.wait_idle(session["id"])
+
+    first_sandbox = (await stack.client.get(f"/sessions/{session['id']}")).json()["bound_sandbox_id"]
+    before = await stack.workspace(session["id"])  # gone after suspend; hold the path only
+    suspend_start = time.perf_counter()
+    suspended = (await stack.client.post(f"/sessions/{session['id']}/suspend")).json()
+    suspend_s = time.perf_counter() - suspend_start
+    assert suspended["status"] == "suspended"
+    assert suspended["bound_sandbox_id"] is None
+    assert not before.exists(), "suspend must tear the sandbox workspace down (data lives in the snapshot)"
+
+    resume_start = time.perf_counter()
+    resumed = (await stack.client.post(f"/sessions/{session['id']}/resume")).json()
+    resume_s = time.perf_counter() - resume_start
+    assert resumed["status"] == "running"
+    assert resumed["bound_sandbox_id"] != first_sandbox, "resume must boot a fresh sandbox"
+
+    events = await stack.turn(
+        session["id"],
+        "What was the secret word I told you? Reply with the word only.",
+    )
+    if secret not in _Stack.assistant_text(events):
+        for e in events:
+            print(f"EVENT seq={e['seq']} {e['type']}: {e['data']}")
+    assert secret in _Stack.assistant_text(events)
+    print(f"\nsuspend={suspend_s:.2f}s resume={resume_s:.2f}s (real dsh + DeepSeek)")
     await stack.wait_idle(session["id"])
