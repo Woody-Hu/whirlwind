@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from argus.bus import InProcessEventBus
-from argus.control import LifecycleManager, SessionManager
+from argus.control import LifecycleManager, SessionManager, WarmPool, WarmPoolConfig
 from argus.drivers import ProcessDriver
 from argus.gateway.app import GatewayDeps, create_app
 from argus.gateway.cron import CronScheduler
@@ -22,7 +22,7 @@ from argus.hostlet import Hostlet, HostletConfig
 from argus.imaging import LocalRegistry
 from argus.seam.model import SeamRenderer
 from argus.storage.local import JSONLEventLog
-from argus.storage.memory import MemoryMetadataStore
+from argus.storage.memory import MemoryKVStore, MemoryMetadataStore
 from argus.timer.wheel import HierarchicalTimer
 
 
@@ -33,6 +33,7 @@ class RuntimeConfig:
     api_key_env: str = "DEEPSEEK_API_KEY"
     llm_upstream: str = "https://api.deepseek.com"
     wheel_tick_ms: int = 20
+    warm_pool: dict[str, int] | None = None  # agent_version_id -> min_warm; off when empty
 
     def resolved_repo_root(self) -> Path:
         if self.repo_root is not None:
@@ -76,7 +77,9 @@ class ArgusRuntime:
 
         # control plane
         self.lifecycle = LifecycleManager(self.wheel)
-        self.manager = SessionManager(self.store, self.hostlet, self.bus, self.lifecycle)
+        self.kv = MemoryKVStore()
+        self.pool = WarmPool(self.store, self.hostlet, self.kv, WarmPoolConfig(versions=config.warm_pool or {}))
+        self.manager = SessionManager(self.store, self.hostlet, self.bus, self.lifecycle, pool=self.pool)
 
         # gateway faces
         self.renderer = SeamRenderer()
@@ -109,6 +112,7 @@ class ArgusRuntime:
         self.wheel.start()
         await self.manager.start()
         await self.cron.start()
+        await self.pool.start()
 
     async def stop(self) -> None:
         if self._stopped:
@@ -116,6 +120,7 @@ class ArgusRuntime:
         self._stopped = True
         if not self._started:
             return
+        await self.pool.stop()
         await self.cron.stop()
         await self.manager.stop()
         await self.wheel.stop()

@@ -158,11 +158,13 @@ class Hostlet:
 
     async def ensure(
         self,
-        session: AgentSession,
+        session: AgentSession | None,
         version: AgentVersion,
         *,
         from_snapshot: Snapshot | None = None,
     ) -> Sandbox:
+        """Provision + boot a sandbox. `session=None` provisions a WARM
+        (unbound, pre-booted) sandbox for the pool; otherwise binds directly."""
         sandbox_id = new_sandbox_id()
         bundle = await self.images.resolve(version.image_ref)
         adapter = self.adapters.adapter_for(version.harness)
@@ -190,7 +192,7 @@ class Hostlet:
         llm_relay_url = f"http://127.0.0.1:{agent_port}/relay/llm"
         manifest = self.renderer.render_manifest(
             version,
-            session_id=session.id,
+            session_id=session.id if session is not None else "",
             workspace_root=str(workspace),
             skills=skills,
             llm_relay_url=llm_relay_url,
@@ -241,14 +243,15 @@ class Hostlet:
         )
         await self.store.upsert_sandbox(record)
         await self.driver.create(spec)
-        record.status = SandboxStatus.BINDING
-        record.bound_session_id = session.id
         record.workspace = str(workspace)
-        await self.store.upsert_sandbox(record)
+        if session is not None:
+            record.status = SandboxStatus.BINDING
+            record.bound_session_id = session.id
+            await self.store.upsert_sandbox(record)
         managed = _ManagedSandbox(
             sandbox_id=sandbox_id,
             agent_port=agent_port,
-            session_id=session.id,
+            session_id=session.id if session is not None else "",
             harness=version.harness,
             workspace=workspace,
             session_root=prepared.session_root,
@@ -259,8 +262,25 @@ class Hostlet:
         except Exception:
             await self.destroy(sandbox_id)
             raise
+        record.status = SandboxStatus.ACTIVE if session is not None else SandboxStatus.WARM
+        await self.store.upsert_sandbox(record)
+        if session is not None:
+            session.bound_sandbox_id = sandbox_id
+            await self.store.update_session(session)
+        return record
+
+    async def bind(self, sandbox_id: str, session: AgentSession) -> Sandbox:
+        """Bind a WARM sandbox to a session (the pool claim's second half)."""
+        managed = self._get(sandbox_id)
+        record = await self.store.get_sandbox(sandbox_id)
+        if record is None or record.status != SandboxStatus.WARM:
+            raise Conflict(f"sandbox {sandbox_id} is not warm; cannot bind")
+        record.status = SandboxStatus.BINDING
+        record.bound_session_id = session.id
+        await self.store.upsert_sandbox(record)
         record.status = SandboxStatus.ACTIVE
         await self.store.upsert_sandbox(record)
+        managed.session_id = session.id
         session.bound_sandbox_id = sandbox_id
         await self.store.update_session(session)
         return record

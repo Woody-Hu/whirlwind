@@ -29,6 +29,7 @@ from argus.hostlet import Hostlet
 from argus.storage.providers import MetadataStore
 
 from .lifecycle import LifecycleManager
+from .pool import WarmPool
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +37,19 @@ STATUS_TOPIC = "sessions.*.status"
 
 
 class SessionManager:
-    def __init__(self, store: MetadataStore, hostlet: Hostlet, bus: InProcessEventBus, lifecycle: LifecycleManager) -> None:
+    def __init__(
+        self,
+        store: MetadataStore,
+        hostlet: Hostlet,
+        bus: InProcessEventBus,
+        lifecycle: LifecycleManager,
+        pool: WarmPool | None = None,
+    ) -> None:
         self.store = store
         self.hostlet = hostlet
         self.bus = bus
         self.lifecycle = lifecycle
+        self.pool = pool
         self._dispatch_locks: dict[str, asyncio.Lock] = {}
         lifecycle.on_expire(self._on_expire)
         self._status_task: asyncio.Task | None = None
@@ -175,7 +184,11 @@ class SessionManager:
         version = await self.store.get_version(session.agent_version_id)
         if version is None:
             raise NotFound(f"version {session.agent_version_id}")
-        sandbox = await self.hostlet.ensure(session, version)
+        sandbox: Sandbox | None = None
+        if self.pool is not None:
+            sandbox = await self.pool.claim(version.id, session)
+        if sandbox is None:
+            sandbox = await self.hostlet.ensure(session, version)
         await self._transition(session, SessionStatus.RUNNING)
         self.lifecycle.arm_max_duration(session)
         return sandbox
