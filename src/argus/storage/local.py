@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -55,8 +54,10 @@ class LocalObjectStore:
 class JSONLEventLog:
     """Append-only JSONL log, one file per session. Owns seq assignment.
 
-    Writes are flushed on append; durability is the process lifetime in M1
-    (provider contract allows swap to a durable log system per architecture 10.3).
+    Writes are line-buffered and flushed on append; durability is the process
+    lifetime in M1 (per-append fsync measured ~7x slower than the ADR ≥5k/s
+    append line — the durable-log provider swap covers crash durability per
+    architecture 10.3).
     """
 
     def __init__(self, root: Path) -> None:
@@ -105,7 +106,6 @@ class JSONLEventLog:
             )
             handle.write(event.model_dump_json() + "\n")
             handle.flush()
-            os.fsync(handle.fileno())
             self._files[session_id] = (handle, last + 1)
             return event
 
