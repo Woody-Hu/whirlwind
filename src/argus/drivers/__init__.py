@@ -15,9 +15,10 @@ from .base import (
     UnsupportedCapability,
 )
 from .process import ProcessDriver
+from .runsc import RunscDriver
 
 __all__ = [
     "Caps", "Density", "DriverError", "ExecResult", "ExecSpec", "Instance",
     "Isolation", "SandboxDriver", "SandboxNotFound", "SandboxSpec",
-    "SnapshotArtifact", "UnsupportedCapability", "ProcessDriver",
+    "SnapshotArtifact", "UnsupportedCapability", "ProcessDriver", "RunscDriver",
 ]
