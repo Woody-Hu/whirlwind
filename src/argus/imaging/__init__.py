@@ -5,6 +5,7 @@ from .base import (
     ImageBuild,
     ImageBundle,
     ImageNotFound,
+    ImageRegistry,
     ImagingError,
     dsh_image_build,
     echo_image_build,
@@ -12,6 +13,6 @@ from .base import (
 from .local import LocalRegistry
 
 __all__ = [
-    "DSH_LAUNCHER_SRC", "ImageBuild", "ImageBundle", "ImageNotFound", "ImagingError",
-    "LocalRegistry", "dsh_image_build", "echo_image_build",
+    "DSH_LAUNCHER_SRC", "ImageBuild", "ImageBundle", "ImageNotFound", "ImageRegistry",
+    "ImagingError", "LocalRegistry", "dsh_image_build", "echo_image_build",
 ]

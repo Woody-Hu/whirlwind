@@ -73,13 +73,14 @@ os.execv(argv[0], list(argv))
 """
 
 
-def dsh_image_build(version: str = "0.1.0rc7") -> ImageBuild:
-    """The native DeepSeek Harness image: SDK + bundled runtime exe."""
+def dsh_image_build(repo_root: Path, version: str = "0.1.0rc7") -> ImageBuild:
+    """The native DeepSeek Harness image: SDK + bundled runtime exe + argus
+    (the SandboxAgent rides inside every platform image)."""
     return ImageBuild(
         name="dsh",
         version=version,
         harness="dsh",
-        requirements=["deepseek-harness-sdk"],
+        requirements=["deepseek-harness-sdk", f"argus @ file://{repo_root}"],
         launcher_argv=["{python}", "{root}/launch.py"],
         env={
             "DSH_CORDIS_CONFIG": "{site_packages}/deepseek_harness_runtime/runtime/cordis.yml",
