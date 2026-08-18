@@ -39,6 +39,7 @@ from argus.harness.protocol import (
     parse_session_event,
     parse_session_status,
 )
+from argus.transport import Endpoint, connect, parse_url, serve
 
 _MAX_HEADER_BYTES = 64 * 1024
 
@@ -133,9 +134,9 @@ async def _post_events(payload: dict[str, Any]) -> None:
     if not STATE.hostlet:
         return
     try:
-        host, port, base = _split_url(STATE.hostlet)
+        endpoint, base = parse_url(STATE.hostlet)
         await _request(
-            host, port, "POST", f"{base}/ingest/events",
+            endpoint, "POST", f"{base}/ingest/events",
             {"content-type": "application/json"},
             json.dumps(payload).encode(),
         )
@@ -143,16 +144,8 @@ async def _post_events(payload: dict[str, Any]) -> None:
         pass
 
 
-def _split_url(url: str) -> tuple[str, int, str]:
-    rest = url.split("://", 1)[-1]
-    authority, _, base = rest.partition("/")
-    host, _, port = authority.partition(":")
-    return host or "127.0.0.1", int(port or 80), "/" + base if base else ""
-
-
 async def _request(
-    host: str,
-    port: int,
+    endpoint: Endpoint,
     method: str,
     path: str,
     headers: dict[str, str],
@@ -162,10 +155,9 @@ async def _request(
     """One-shot HTTP/1.1 request over a fresh connection (Connection: close)."""
     writer = None
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=timeout_s
-        )
-        head = f"{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n"
+        reader, writer = await connect(endpoint, timeout_s=timeout_s)
+        authority = endpoint.authority()
+        head = f"{method} {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n"
         for key, value in headers.items():
             head += f"{key}: {value}\r\n"
         head += f"Content-Length: {len(body)}\r\n\r\n"
@@ -350,14 +342,12 @@ async def _relay(
         _write_response(writer, 503, "Service Unavailable", b'{"error": "no hostlet"}')
         await writer.drain()
         return
-    host, port, base = _split_url(STATE.hostlet)
-    upstream_path = f"{base}/secret/llm/{path[len('/relay/llm/'):]}"
+    hostlet_endpoint, hostlet_base = parse_url(STATE.hostlet)
+    upstream_path = f"{hostlet_base}/secret/llm/{path[len('/relay/llm/'):]}"
     upstream_writer = None
     try:
-        upstream_reader, upstream_writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=30.0
-        )
-        head = f"{method} {upstream_path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n"
+        upstream_reader, upstream_writer = await connect(hostlet_endpoint, timeout_s=30.0)
+        head = f"{method} {upstream_path} HTTP/1.1\r\nHost: {hostlet_endpoint.authority()}\r\nConnection: close\r\n"
         for key, value in headers.items():
             if key.lower() not in _HOP_HEADERS:
                 head += f"{key}: {value}\r\n"
@@ -408,9 +398,11 @@ async def _relay(
 
 async def main() -> None:
     await boot()
-    server = await asyncio.start_server(
-        _handle_connection, "127.0.0.1", int(os.environ.get("ARGUS_AGENT_PORT", "8000"))
-    )
+    listen = os.environ.get("ARGUS_AGENT_LISTEN")
+    if not listen:
+        # backwards-compatible M1 default: TCP on the pre-allocated agent port
+        listen = f"tcp://127.0.0.1:{int(os.environ.get('ARGUS_AGENT_PORT', '8000'))}"
+    server = await serve(listen, _handle_connection)
     async with server:
         await server.serve_forever()
 
