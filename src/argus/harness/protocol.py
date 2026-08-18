@@ -3,11 +3,11 @@
 A harness mounts natively when it implements this protocol over stdio
 (line-delimited JSON-RPC 2.0):
 
-  request      initialize      {cwd, provider, model, maxTokens?} -> {serverInfo}
+  request      initialize      {cwd, provider, model, maxTokens?}  -> {serverInfo}
   request      session/prompt  {sessionId, contentBlocks}         -> {messageId}
   request      shutdown        {}                                 -> {}
   notification session.event   {sessionId, event{type, seq?, time?, data, surface?}}
-  notification session.status  {sessionId, status: "idle"|"busy"}
+  notification session.status  {sessionId, status: "idle"|"running"}
   notification subagent.started/finished {parentSessionId, childSessionId}
 
 Turn lifecycle: after session/prompt is accepted, the harness emits

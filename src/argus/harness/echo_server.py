@@ -96,7 +96,7 @@ class EchoHarness:
         )
         reply = await self._reply_for(text)
         self._sessions.setdefault(session_id, {"messages": []})["messages"].append(text)
-        self._status(session_id, "busy")
+        self._status(session_id, "running")
         await self._emit(session_id, "turn/start", {"input_ref": message_id})
         if self._chunk_mode == "chars":
             for i in range(0, len(reply), 8):

@@ -94,11 +94,11 @@ async def test_full_turn_event_sequence() -> None:
         assert types[0] == "turn/start"
         assert "assistant/message" in types
         assert types[-1] == "turn/end"
-        # status transition seen: busy then idle
+        # status transition seen: running then idle (dsh vocabulary)
         statuses = [
             parse_session_status(n)[1] for n in recorder.events if parse_session_status(n) is not None
         ]
-        assert statuses == ["busy", "idle"]
+        assert statuses == ["running", "idle"]
         # the final assistant message echoes the input
         final = [n for n in recorder.events if parse_session_event(n) is not None]
         message_events = [
