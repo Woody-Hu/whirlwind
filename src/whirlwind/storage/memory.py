@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -18,6 +17,7 @@ from whirlwind.core import (
     SkillRef,
 )
 from whirlwind.core.errors import Conflict, NotFound
+from whirlwind.storage.skills import SkillArchives
 
 
 class MemoryMetadataStore:
@@ -31,9 +31,14 @@ class MemoryMetadataStore:
         self._sandboxes: dict[str, Sandbox] = {}
         self._snapshots: dict[str, list[Snapshot]] = {}  # session_id -> newest last
         self._crons: dict[str, CronJob] = {}
-        self._skills: dict[tuple[str, str], Path] = {}
-        self._skills_dir = skills_dir
+        self._skills = SkillArchives(skills_dir) if skills_dir is not None else None
         self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        """No-op; uniform lifecycle shape with the database-backed stores."""
+
+    async def aclose(self) -> None:
+        """No-op; uniform lifecycle shape with the database-backed stores."""
 
     async def create_agent(self, agent: AgentDefinition) -> AgentDefinition:
         async with self._lock:
@@ -128,26 +133,14 @@ class MemoryMetadataStore:
         return [c for c in self._crons.values() if c.agent_id == agent_id]
 
     async def save_skill(self, name: str, version: str, archive: Path) -> SkillRef:
-        if self._skills_dir is None:
+        if self._skills is None:
             raise NotFound("skills dir not configured")
-        dest_dir = self._skills_dir / name / version
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        if archive.is_dir():
-            shutil.copytree(archive, dest_dir, dirs_exist_ok=True)
-        else:
-            shutil.copy(archive, dest_dir / archive.name)
-        ref = SkillRef(name=name, version=version)
-        self._skills[(name, version)] = dest_dir
-        return ref
+        return self._skills.save(name, version, archive)
 
     async def skill_path(self, ref: SkillRef) -> Path | None:
-        if (ref.name, ref.version) in self._skills:
-            return self._skills[(ref.name, ref.version)]
-        if self._skills_dir is not None:
-            candidate = self._skills_dir / ref.name / ref.version
-            if candidate.exists():
-                return candidate
-        return None
+        if self._skills is None:
+            return None
+        return self._skills.path(ref)
 
 
 class MemoryKVStore:
@@ -157,6 +150,12 @@ class MemoryKVStore:
         self._data: dict[str, str] = {}
         self._expiry: dict[str, float] = {}
         self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        """No-op; uniform lifecycle shape with the database-backed stores."""
+
+    async def aclose(self) -> None:
+        """No-op; uniform lifecycle shape with the database-backed stores."""
 
     async def _sweep(self) -> None:
         now = time.monotonic()

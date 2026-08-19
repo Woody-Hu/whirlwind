@@ -1,80 +1,167 @@
-"""Storage provider integration tests against real in-process state and real files."""
+"""Storage provider contract tests (ADR-0004 D5).
+
+The MetadataStore suite is parameterized over every backend (memory always;
+PostgreSQL against a real service, skipped when absent) — parity between
+implementations is enforced by running the same assertions, never assumed.
+KV / locks / object store / event log still run against their in-process
+implementations; Redis joins the KV contract suite in its own change.
+"""
 
 import asyncio
 
 import pytest
 
-from whirlwind.core import AgentDefinition, AgentSession, AgentVersion, CronJob, SkillRef, new_session_id
+from whirlwind.core import (
+    AgentDefinition,
+    AgentSession,
+    AgentVersion,
+    CronJob,
+    Sandbox,
+    SandboxStatus,
+    SkillRef,
+    Snapshot,
+    SnapshotKind,
+    new_session_id,
+)
 from whirlwind.core.errors import Conflict, NotFound
 from whirlwind.storage import WALEventLog, LocalObjectStore, MemoryKVStore, MemoryLocks, MemoryMetadataStore
 
 
-async def test_metadata_agent_crud_and_name_uniqueness(tmp_path):
-    store = MemoryMetadataStore(skills_dir=tmp_path / "skills")
+# ------------------------------------------------- MetadataStore contract
+
+async def test_metadata_agent_crud_and_name_uniqueness(metadata_store):
     agent = AgentDefinition(id="agt_1", name="helper")
-    await store.create_agent(agent)
+    await metadata_store.create_agent(agent)
     with pytest.raises(Conflict):
-        await store.create_agent(AgentDefinition(id="agt_2", name="helper"))
-    assert (await store.get_agent_by_name("helper")).id == "agt_1"
+        await metadata_store.create_agent(AgentDefinition(id="agt_2", name="helper"))
+    assert (await metadata_store.get_agent_by_name("helper")).id == "agt_1"
     agent.default_version_id = "ver_9"
-    await store.update_agent(agent)
-    assert (await store.get_agent("agt_1")).default_version_id == "ver_9"
+    await metadata_store.update_agent(agent)
+    assert (await metadata_store.get_agent("agt_1")).default_version_id == "ver_9"
     with pytest.raises(NotFound):
-        await store.update_agent(AgentDefinition(id="missing", name="x"))
+        await metadata_store.update_agent(AgentDefinition(id="missing", name="x"))
 
 
-async def test_metadata_versions_sessions_crons(tmp_path):
-    store = MemoryMetadataStore(skills_dir=tmp_path / "skills")
-    await store.create_agent(AgentDefinition(id="agt_1", name="helper"))
+async def test_metadata_versions_sessions_crons(metadata_store):
+    await metadata_store.create_agent(AgentDefinition(id="agt_1", name="helper"))
     v1 = AgentVersion(id="ver_1", agent_id="agt_1", version="1", harness="echo", image_ref="echo@1")
-    await store.create_version(v1)
-    assert [v.id for v in await store.list_versions("agt_1")] == ["ver_1"]
+    await metadata_store.create_version(v1)
+    assert [v.id for v in await metadata_store.list_versions("agt_1")] == ["ver_1"]
 
     ses = AgentSession(id=new_session_id(), agent_id="agt_1", agent_version_id="ver_1")
-    await store.create_session(ses)
-    assert (await store.get_session(ses.id)).status.value == "created"
+    await metadata_store.create_session(ses)
+    assert (await metadata_store.get_session(ses.id)).status.value == "created"
 
     cron = CronJob(agent_id="agt_1", schedule="* * * * *", input_template="hi")
-    saved = await store.save_cron(cron)
+    saved = await metadata_store.save_cron(cron)
     assert saved.id
-    assert len(await store.list_crons("agt_1")) == 1
-    await store.delete_cron(saved.id)
-    assert await store.list_crons("agt_1") == []
+    assert len(await metadata_store.list_crons("agt_1")) == 1
+    await metadata_store.delete_cron(saved.id)
+    assert await metadata_store.list_crons("agt_1") == []
 
 
-async def test_skill_persistence_roundtrip(tmp_path):
-    store = MemoryMetadataStore(skills_dir=tmp_path / "skills")
+async def test_metadata_sessions_insertion_order(metadata_store):
+    """Cron REUSE picks `live[-1]`; list order must be creation order on every backend."""
+    await metadata_store.create_agent(AgentDefinition(id="agt_1", name="helper"))
+    await metadata_store.create_version(
+        AgentVersion(id="ver_1", agent_id="agt_1", version="1", harness="echo", image_ref="echo@1")
+    )
+    ids = []
+    for i in range(3):
+        ses = AgentSession(id=new_session_id(), agent_id="agt_1", agent_version_id="ver_1")
+        await metadata_store.create_session(ses)
+        ids.append(ses.id)
+    assert [s.id for s in await metadata_store.list_sessions("agt_1")] == ids
+
+
+async def test_metadata_snapshots_latest_wins(metadata_store):
+    s1 = Snapshot(kind=SnapshotKind.DATA, subject="sbx_1", manifest={"session_id": "ses_1"}, location="/a")
+    golden = Snapshot(kind=SnapshotKind.GOLDEN, subject="ver_1", manifest={}, location="/g")
+    s2 = Snapshot(kind=SnapshotKind.FULL, subject="sbx_1", manifest={"session_id": "ses_1"}, location="/b")
+    await metadata_store.save_snapshot(s1)
+    await metadata_store.save_snapshot(golden)
+    await metadata_store.save_snapshot(s2)
+    latest = await metadata_store.latest_session_snapshot("ses_1")
+    assert latest is not None and latest.location == "/b"  # last full/data wins
+    # subject is keyed by manifest.session_id, not the sandbox id; golden never surfaces
+    assert await metadata_store.latest_session_snapshot("sbx_1") is None
+    assert await metadata_store.latest_session_snapshot("ses_missing") is None
+
+
+async def test_metadata_sandbox_upsert(metadata_store):
+    sbx = Sandbox(id="sbx_1", pool_id="pool_1")
+    await metadata_store.upsert_sandbox(sbx)
+    sbx.status = SandboxStatus.WARM
+    await metadata_store.upsert_sandbox(sbx)
+    fetched = await metadata_store.get_sandbox("sbx_1")
+    assert fetched is not None and fetched.status == SandboxStatus.WARM
+    assert [s.id for s in await metadata_store.list_sandboxes()] == ["sbx_1"]
+    assert await metadata_store.get_sandbox("sbx_missing") is None
+
+
+async def test_skill_persistence_roundtrip(metadata_store, tmp_path):
     src = tmp_path / "pkg"
     (src / "sub").mkdir(parents=True)
     (src / "SKILL.md").write_text("# demo skill")
     (src / "sub" / "run.sh").write_text("echo run")
-    ref = await store.save_skill("demo", "1.0.0", src)
-    path = await store.skill_path(ref)
+    ref = await metadata_store.save_skill("demo", "1.0.0", src)
+    path = await metadata_store.skill_path(ref)
     assert path is not None
     assert (path / "SKILL.md").read_text() == "# demo skill"
     assert (path / "sub" / "run.sh").exists()
-    assert await store.skill_path(SkillRef(name="demo", version="9.9")) is None
+    assert await metadata_store.skill_path(SkillRef(name="demo", version="9.9")) is None
 
+
+# --------------------------------------------- PostgreSQL-specific proof
+
+async def test_postgres_metadata_survives_restart(postgres_dsn, tmp_path):
+    """The headline production property: metadata outlives the process."""
+    from whirlwind.storage.postgres import PostgresMetadataStore
+
+    store = PostgresMetadataStore(postgres_dsn, skills_dir=tmp_path / "skills")
+    await store.start()
+    await store.pool.execute(
+        "TRUNCATE agents, agent_versions, sessions, sandboxes, snapshots, crons RESTART IDENTITY"
+    )
+    agent = AgentDefinition(id="agt_keep", name="keeper")
+    await store.create_agent(agent)
+    await store.create_version(
+        AgentVersion(id="ver_keep", agent_id="agt_keep", version="1", harness="echo", image_ref="echo@1")
+    )
+    ses = AgentSession(id=new_session_id(), agent_id="agt_keep", agent_version_id="ver_keep")
+    await store.create_session(ses)
+    cron = await store.save_cron(CronJob(agent_id="agt_keep", schedule="* * * * *", input_template="hi"))
+    await store.save_snapshot(
+        Snapshot(kind=SnapshotKind.DATA, subject="sbx_k", manifest={"session_id": ses.id}, location="/snap")
+    )
+    await store.aclose()
+
+    # a "restarted process": fresh instance, same DSN
+    store2 = PostgresMetadataStore(postgres_dsn, skills_dir=tmp_path / "skills")
+    await store2.start()
+    try:
+        assert (await store2.get_agent("agt_keep")).name == "keeper"
+        assert [v.id for v in await store2.list_versions("agt_keep")] == ["ver_keep"]
+        assert (await store2.get_session(ses.id)).id == ses.id
+        assert (await store2.list_crons("agt_keep"))[0].id == cron.id
+        latest = await store2.latest_session_snapshot(ses.id)
+        assert latest is not None and latest.location == "/snap"
+    finally:
+        await store2.aclose()
+
+
+# --------------------------------- KV / locks (in-process, Redis joins later)
 
 async def test_kv_cas_atomicity_under_concurrency():
     kv = MemoryKVStore()
     await kv.put("route/ses_1", "sbx_a")
-    winners = 0
-    losers = 0
-
-    async def try_cas(expected: str, new: str) -> bool:
-        return await kv.cas("route/ses_1", expected, new)
-
     results = await asyncio.gather(
-        try_cas("sbx_a", "sbx_b"),
-        try_cas("sbx_a", "sbx_c"),
+        kv.cas("route/ses_1", "sbx_a", "sbx_b"),
+        kv.cas("route/ses_1", "sbx_a", "sbx_c"),
     )
     # exactly one CAS from sbx_a succeeds
     assert results.count(True) == 1
-    winners += results.count(True)
-    losers += results.count(False)
     assert await kv.get("route/ses_1") in ("sbx_b", "sbx_c")
-    assert winners == 1 and losers == 1
 
 
 async def test_kv_ttl_expiry():
@@ -92,6 +179,8 @@ async def test_locks_mutual_exclusion():
     await locks.release("op")
     assert await locks.acquire("op", ttl_s=5) is True
 
+
+# ------------------------------------- object store / event log (unchanged)
 
 async def test_object_store_roundtrip_and_escape_guard(tmp_path):
     store = LocalObjectStore(tmp_path / "objects")
