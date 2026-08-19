@@ -147,6 +147,7 @@ class WhirlwindRuntime:
                 cron=self.cron,
                 mcp=self.mcp,
                 repo_root=config.resolved_repo_root(),
+                kv=self.kv,
             ),
             on_startup=self.start,
             on_shutdown=self.stop,

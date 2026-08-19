@@ -518,3 +518,31 @@ async def test_live_session_cap_surfaces_as_http_429(
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, timeout=10)
+
+
+# ----------------------------------------- idempotency keys (ADR-0005 D3)
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_replays_session_create(gateway: httpx.AsyncClient) -> None:
+    """A retried session create with the same Idempotency-Key returns the
+    same session (replayed), and exactly one session exists server-side."""
+    await _build_echo_image(gateway)
+    agent = await _create_echo_agent(gateway, "idem-agent")
+    headers = {"Idempotency-Key": "create-once-1"}
+    payload = {"agent_id": agent["agent"]["id"]}
+
+    first = await gateway.post("/sessions", json=payload, headers=headers)
+    assert first.status_code == 200, first.text
+    # the retry a timeout-flustered client would send
+    second = await gateway.post("/sessions", json=payload, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+
+    sessions = (await gateway.get("/sessions", params={"agent_id": agent["agent"]["id"]})).json()
+    assert len(sessions) == 1  # one session, not two
+
+    # a different key is a different request — creates a second session
+    third = await gateway.post("/sessions", json=payload, headers={"Idempotency-Key": "other"})
+    assert third.status_code == 200
+    assert third.json()["id"] != first.json()["id"]
