@@ -177,6 +177,61 @@ async def test_lifecycle_end_to_end(tmp_path: Path) -> None:
 
 @RUNSC_REQUIRED
 @pytest.mark.asyncio
+async def test_full_snapshot_checkpoint_roundtrip(tmp_path: Path) -> None:
+    """snapshot_full capability is real: runsc checkpoint (embedded CRIU)
+    dumps memory + rootfs state into the artifact directory."""
+    driver = _driver(tmp_path)
+    spec = _spec(tmp_path, "sbx_ckpt")
+    await driver.create(spec)
+    try:
+        await driver.exec(
+            spec.sandbox_id,
+            ExecSpec(argv=["/bin/busybox", "sh", "-c", "echo state=42 > ws.txt"], timeout_s=30.0),
+        )
+        artifact = await driver.checkpoint(spec.sandbox_id, SnapshotKind.FULL)
+        assert artifact.kind == SnapshotKind.FULL
+        assert artifact.path.is_dir()
+        assert artifact.size > 0
+        assert artifact.manifest["backend"] == "runsc/CRIU"
+        # CRIU image files are really there
+        assert (artifact.path / "checkpoint.img").exists()
+        assert (artifact.path / "pages.img").exists()
+    finally:
+        await driver.destroy(spec.sandbox_id)
+
+
+@RUNSC_REQUIRED
+@pytest.mark.skipif(IS_RESTRICTED, reason="runsc restore is unsupported in rootless mode")
+@pytest.mark.asyncio
+async def test_full_snapshot_restore(tmp_path: Path) -> None:
+    """checkpoint -> destroy -> restore boots the checkpointed kernel state
+    (memory + rootfs) into a fresh sandbox id."""
+    driver = _driver(tmp_path)
+    spec = _spec(tmp_path, "sbx_src")
+    await driver.create(spec)
+    await driver.exec(
+        spec.sandbox_id,
+        ExecSpec(argv=["/bin/busybox", "sh", "-c", "echo state=42 > ws.txt"], timeout_s=30.0),
+    )
+    artifact = await driver.checkpoint(spec.sandbox_id, SnapshotKind.FULL)
+    await driver.destroy(spec.sandbox_id)
+
+    spec2 = _spec(tmp_path, "sbx_restored")
+    instance = await driver.create(spec2, from_snapshot=artifact)
+    try:
+        assert instance.pid is not None
+        result = await driver.exec(
+            spec2.sandbox_id,
+            ExecSpec(argv=["/bin/busybox", "echo", "alive"], timeout_s=30.0),
+        )
+        assert result.exit_code == 0
+        assert "alive" in result.stdout
+    finally:
+        await driver.destroy(spec2.sandbox_id)
+
+
+@RUNSC_REQUIRED
+@pytest.mark.asyncio
 async def test_sandbox_isolates_kernel_from_host(tmp_path: Path) -> None:
     """The guest kernel is the runsc Sentry, not the host kernel — the
     isolation claim behind Isolation.LIGHT_VM, verified from inside."""
