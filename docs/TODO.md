@@ -24,16 +24,18 @@ Replaces hand-rolled cron/YAML with mature libraries and lands the first real da
 - [x] P0.5 Runtime backend selection: `RuntimeConfig.metadata_backend/kv_backend` + `whirlwind serve` flags; extras `whirlwind[postgres]` / `whirlwind[redis]` — ADR-0004 D4/D5
 - [x] P0.6 Storage benchmarks: memory vs PostgreSQL vs Redis (real services, no fabricated numbers) — ADR-0004 D6 + measured baselines
 
-## P1 — Edge hardening / 边缘加固（下一轮）
+## P1 — Edge hardening / 边缘加固（本轮）
 
 The gateway currently has no authn/authz (Architecture 3.1 G1 promises tenant auth, rate limiting, idempotency keys) and no resource gates (Architecture 6.2 promises tenant quotas).
 
 网关当前无认证鉴权（架构 3.1 G1 承诺租户认证、限流、幂等键校验），无资源闸门（架构 6.2 承诺租户配额）。
 
-- [ ] P1.1 Gateway API-key authn (constant-time compare; `WHIRLWIND_API_KEY`-style config; CLI sends the header) — prerequisite for any network-facing deployment
-- [ ] P1.2 Quotas & backpressure: concurrent session cap per deployment first (single-tenant), tenant-scoped counters when the tenant dimension lands (Architecture 6.2)
-- [ ] P1.3 Sandbox resource limits: thread CPU/memory fields through `SandboxSpec` into process rlimits / runsc OCI config
-- [ ] P1.4 Idempotency keys on mutating gateway routes (Architecture 3.1 G1)
+- [ ] P1.1 Gateway API-key authn (constant-time compare; `WHIRLWIND_API_KEY`-style config; CLI sends the header) — prerequisite for any network-facing deployment; deferred pending the tenant dimension
+- [x] P1.2 Quotas & backpressure: live-session admission cap (`--max-live-sessions`, store-derived count, 429 `whirlwind/quota-exceeded`) — ADR-0005 D2; measured 0.20ms per create at 1k live sessions
+- [x] P1.3 Sandbox resource limits: `Resources` on `SandboxSpec` (mem/cpu/pids) enforced via process rlimits and runsc OCI config — ADR-0005 D1; cold start p50 245ms with limits applied (250ms line holds)
+- [x] P1.4 Idempotency keys on mutating gateway routes (`Idempotency-Key` header, KVStore-backed replay/claim, 409 in-flight, 422 body mismatch) — ADR-0005 D3
+- [x] P1.5 k3s deployment form: `deploy/k3s/` (image build, manifest with probes/resources/PVC/NodePort, rerunnable smoke script); validated on a real k3s v1.36.3 control plane (`--disable-agent` — the sandbox container cannot run kubelet; pods verified through scheduling, PVC binding, NodePort) — ADR-0005 D4
+- [ ] P1.6 (next, with tenancy) API-key rate limiting per tenant; tenant-scoped quotas; cross-process quota hardening (Redis counter)
 
 ## P2 — Observability / 可观测性
 
@@ -69,3 +71,4 @@ ADR-0002 已预留 provider 位；P0 先落地单节点 PostgreSQL/Redis。多�
 - 2026-08 M2: full session lifecycle (suspend/resume), warm pool CAS claiming, idle/max-duration lifecycle, cron scheduler on the hierarchical timing wheel (ADR-0001)
 - 2026-08 M3 (partial): runsc driver on real gVisor, TCP/UDS/vsock transports, durable WAL EventLog with group-commit fsync + crash recovery (ADR-0002)
 - 2026-08 P0: mature-library foundations + PostgreSQL/Redis storage providers (ADR-0003, ADR-0004)
+- 2026-08 P1 (auth excluded): sandbox resource limits, live-session quota, idempotency keys, k3s deployment form with measured gate costs (ADR-0005)

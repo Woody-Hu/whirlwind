@@ -142,6 +142,10 @@ Artifacts live in `deploy/k3s/` (image build script, manifest, smoke script); th
 
 ## D5 测试——真实执行，不用替身
 
+Measured cost of the gates (`tests/benchmark/test_edge_bench.py`, dev sandbox 2026-08-19): idempotency passthrough 614k req/s (keyless POSTs pay a header scan); keyed first-execute 29k req/s / replay 36k req/s on the memory KV; quota admission check 0.20ms per create_session with 1,000 live sessions (one `list_sessions` — the whole D2 cost); cold start with `Resources(mem=256mb, cpu=30s, pids=64)` applied p50=245ms, inside the 250ms ADR line (the rlimits ride the fork path, no regression).
+
+闸门的实测成本（`tests/benchmark/test_edge_bench.py`，开发沙箱 2026-08-19）：幂等直通 614k req/s（无键 POST 只付一次 header 扫描）；带键首次执行 29k req/s / 重放 36k req/s（memory KV）；配额准入检查在 1,000 活跃会话下每次 create_session 0.20ms（一次 `list_sessions`——D2 的全部成本）；带 `Resources(mem=256mb, cpu=30s, pids=64)` 的冷启动 p50=245ms，仍在 250ms ADR 线内（rlimits 走 fork 路径，无回归）。
+
 - **Resources (process)**: a sandbox with `mem_limit_mb` that tries to allocate past the cap dies of `MemoryError`; a busy-loop with `cpu_seconds` dies of SIGXCPU; `/proc/self/limits` inside the sandbox shows the applied rlimits. Real child processes, real kernels.
   **资源（process）**：设 `mem_limit_mb` 的沙箱试图超额分配内存死于 `MemoryError`；设 `cpu_seconds` 的忙循环死于 SIGXCPU；沙箱内读 `/proc/self/limits` 可见生效的 rlimit。真实子进程、真实内核。
 - **Resources (runsc)**: OCI config rendering asserted field-by-field; live enforcement runs only when runsc + root are present (skip otherwise, ADR-0002 policy).
