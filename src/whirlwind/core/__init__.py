@@ -5,7 +5,7 @@ through the structures defined here (AgentSession and friends), per the
 architecture doc's "AgentSession is the only scheduling unit" principle.
 """
 
-from .errors import WhirlwindError, InvalidTransition, NotFound, Conflict, SeamError, HarnessError
+from .errors import WhirlwindError, InvalidTransition, NotFound, Conflict, QuotaExceeded, SeamError, HarnessError
 from .ids import new_agent_id, new_version_id, new_session_id, new_sandbox_id, new_snapshot_id, new_cron_id, new_team_id
 from .events import SessionEvent, Surface, SurfaceOp, EventKind
 from .model import (
@@ -26,7 +26,7 @@ from .model import (
 from .statemachine import SESSION_TRANSITIONS, SANDBOX_TRANSITIONS, check_transition
 
 __all__ = [
-    "WhirlwindError", "InvalidTransition", "NotFound", "Conflict", "SeamError", "HarnessError",
+    "WhirlwindError", "InvalidTransition", "NotFound", "Conflict", "QuotaExceeded", "SeamError", "HarnessError",
     "new_agent_id", "new_version_id", "new_session_id", "new_sandbox_id", "new_snapshot_id",
     "new_cron_id", "new_team_id",
     "SessionEvent", "Surface", "SurfaceOp", "EventKind",

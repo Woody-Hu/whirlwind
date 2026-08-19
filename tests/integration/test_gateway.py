@@ -477,3 +477,44 @@ async def test_production_backends_serve_a_real_turn(
         assert (await store.get_session(session["id"])).id == session["id"]
     finally:
         await store.aclose()
+
+
+# --------------------------------------------- quota backpressure (ADR-0005 D2)
+
+
+@pytest.mark.asyncio
+async def test_live_session_cap_surfaces_as_http_429(
+    tmp_path: Path, llm_upstream: str
+) -> None:
+    """The admission gate must reach the HTTP face as 429 quota-exceeded."""
+    runtime = WhirlwindRuntime(
+        RuntimeConfig(
+            data_dir=tmp_path / "runtime",
+            repo_root=REPO_ROOT,
+            api_key_env="WHIRLWIND_TEST_KEY",
+            llm_upstream=llm_upstream,
+            max_live_sessions=1,
+        )
+    )
+    server = uvicorn.Server(uvicorn.Config(runtime.app, host="127.0.0.1", port=0, log_level="warning"))
+    task = asyncio.get_running_loop().create_task(server.serve())
+    for _ in range(200):
+        if server.started:
+            break
+        await asyncio.sleep(0.05)
+    assert server.started
+    port = int(server.servers[0].sockets[0].getsockname()[1])  # type: ignore[index]
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=30.0) as client:
+            await _build_echo_image(client)
+            agent = await _create_echo_agent(client, "capped-agent")
+            first = await client.post("/sessions", json={"agent_id": agent["agent"]["id"]})
+            assert first.status_code == 200, first.text
+            second = await client.post("/sessions", json={"agent_id": agent["agent"]["id"]})
+            assert second.status_code == 429
+            body = second.json()
+            assert body["error"]["code"] == "whirlwind/quota-exceeded"
+            assert body["error"]["detail"]["max_live_sessions"] == 1
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, timeout=10)

@@ -65,6 +65,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
             postgres_dsn=args.postgres_dsn,
             kv_backend=args.kv_backend,
             redis_url=args.redis_url,
+            max_live_sessions=args.max_live_sessions,
         )
     )
     uvicorn.run(runtime.app, host=args.host, port=args.port, log_level="info")
@@ -220,6 +221,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--kv-backend", default="memory", choices=["memory", "redis"],
                        help="hot-state KV backend (default: memory)")
     serve.add_argument("--redis-url", default=None, help="redis://[:pass@]host:port/db (with --kv-backend redis)")
+    serve.add_argument("--max-live-sessions", type=int, default=None,
+                       help="cap on concurrent live sessions (default: uncapped)")
     serve.set_defaults(func=cmd_serve)
 
     image = sub.add_parser("image")

@@ -42,6 +42,7 @@ class RuntimeConfig:
     kv_backend: str = "memory"  # "memory" | "redis" (ADR-0004 D4)
     redis_url: str | None = None
     sandbox_resources: Resources | None = None  # per-sandbox ceilings (ADR-0005 D1)
+    max_live_sessions: int | None = None  # admission gate (ADR-0005 D2); None = uncapped
 
     def resolved_repo_root(self) -> Path:
         if self.repo_root is not None:
@@ -123,7 +124,10 @@ class WhirlwindRuntime:
         # control plane
         self.lifecycle = LifecycleManager(self.wheel)
         self.pool = WarmPool(self.store, self.hostlet, self.kv, WarmPoolConfig(versions=config.warm_pool or {}))
-        self.manager = SessionManager(self.store, self.hostlet, self.bus, self.lifecycle, pool=self.pool)
+        self.manager = SessionManager(
+            self.store, self.hostlet, self.bus, self.lifecycle,
+            pool=self.pool, max_live_sessions=config.max_live_sessions,
+        )
 
         # gateway faces
         self.renderer = SeamRenderer()

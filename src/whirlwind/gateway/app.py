@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 
 from whirlwind.control.manager import SessionManager
 from whirlwind.core import AgentDefinition, AgentVersion, CronJob
-from whirlwind.core.errors import WhirlwindError, BadRequest, Conflict, InvalidTransition, NotFound, SeamError
+from whirlwind.core.errors import WhirlwindError, BadRequest, Conflict, InvalidTransition, NotFound, QuotaExceeded, SeamError
 from whirlwind.core.model import SessionPolicy
 from whirlwind.gateway.cron import CronScheduler
 from whirlwind.gateway.mcp import McpGateway
@@ -98,6 +98,7 @@ _STATUS_BY_ERROR = {
     NotFound: 404,
     Conflict: 409,
     InvalidTransition: 409,
+    QuotaExceeded: 429,
     SeamError: 400,
     BadRequest: 400,
 }

@@ -296,3 +296,55 @@ async def test_warm_pool_claim_beats_cold_start(
         await manager.stop()
         await wheel.stop()
         await hostlet.aclose()
+
+
+# ------------------------------------------- admission gate (ADR-0005 D2)
+
+
+@pytest.mark.asyncio
+async def test_live_session_cap_backpressure(tmp_path: Path) -> None:
+    """Cap on live sessions: the (cap+1)-th create raises QuotaExceeded;
+    closing a session frees capacity again. Quota checks never dispatch,
+    so no hostlet lifecycle is needed beyond construction."""
+    store = MemoryMetadataStore()
+    bus = InProcessEventBus()
+    hostlet = Hostlet(
+        driver=ProcessDriver(),
+        images=LocalRegistry(tmp_path / "images"),
+        adapters=default_registry(),
+        renderer=SeamRenderer(),
+        store=store,
+        event_log=WALEventLog(tmp_path / "events"),
+        bus=bus,
+        config=HostletConfig(data_dir=tmp_path),
+    )
+    wheel = HierarchicalTimer(tick_ms=20)
+    lifecycle = LifecycleManager(wheel)
+    manager = SessionManager(store, hostlet, bus, lifecycle, max_live_sessions=2)
+    await store.start()
+    try:
+        agent = AgentDefinition(id=new_agent_id(), name="capped")
+        await store.create_agent(agent)
+        version = AgentVersion(
+            id=new_version_id(), agent_id=agent.id, version="1",
+            harness="echo", image_ref="echo@0.1.0",
+        )
+        await store.create_version(version)
+
+        s1 = await manager.create_session(agent.id, version.id)
+        s2 = await manager.create_session(agent.id, version.id)
+        assert s1.status != SessionStatus.CLOSED and s2.status != SessionStatus.CLOSED
+
+        from whirlwind.core.errors import QuotaExceeded
+
+        with pytest.raises(QuotaExceeded) as exc_info:
+            await manager.create_session(agent.id, version.id)
+        assert exc_info.value.detail["max_live_sessions"] == 2
+        assert exc_info.value.detail["live"] == 2
+
+        # close frees capacity; creation works again
+        await manager.close_session(s1.id)
+        s3 = await manager.create_session(agent.id, version.id)
+        assert s3.id != s1.id
+    finally:
+        await store.aclose()
