@@ -61,6 +61,10 @@ def cmd_serve(args: argparse.Namespace) -> None:
             repo_root=_path(args.repo_root) if args.repo_root else None,
             api_key_env=args.api_key_env,
             llm_upstream=args.llm_upstream,
+            metadata_backend=args.metadata_backend,
+            postgres_dsn=args.postgres_dsn,
+            kv_backend=args.kv_backend,
+            redis_url=args.redis_url,
         )
     )
     uvicorn.run(runtime.app, host=args.host, port=args.port, log_level="info")
@@ -210,6 +214,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--repo-root", default=None, help="repo image builds install whirlwind from (default: auto)")
     serve.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
     serve.add_argument("--llm-upstream", default="https://api.deepseek.com")
+    serve.add_argument("--metadata-backend", default="memory", choices=["memory", "postgres"],
+                       help="metadata store backend (default: memory)")
+    serve.add_argument("--postgres-dsn", default=None, help="postgresql://user:pass@host:port/db (with --metadata-backend postgres)")
+    serve.add_argument("--kv-backend", default="memory", choices=["memory", "redis"],
+                       help="hot-state KV backend (default: memory)")
+    serve.add_argument("--redis-url", default=None, help="redis://[:pass@]host:port/db (with --kv-backend redis)")
     serve.set_defaults(func=cmd_serve)
 
     image = sub.add_parser("image")
