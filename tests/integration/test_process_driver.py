@@ -18,6 +18,7 @@ import pytest
 
 from whirlwind.core import SnapshotKind
 from whirlwind.core.errors import WhirlwindError
+from whirlwind.core.platform import current_facts
 from whirlwind.drivers import (
     Density,
     DriverError,
@@ -33,12 +34,13 @@ SRC = str(Path(__file__).resolve().parents[2] / "src")
 ECHO_ARGV = [sys.executable, "-m", "whirlwind.harness.echo_server"]
 BASE_ENV = {"PYTHONPATH": SRC, "PYTHONUNBUFFERED": "1"}
 
-# RLIMIT_AS (virtual-memory ceiling) is a Linux enforcement path. On macOS the
-# soft=hard form of setrlimit(RLIMIT_AS, x) raises "current limit exceeds
-# maximum limit", so memory ceilings via RLIMIT_AS are unsupported there and are
-# honestly reported as not-as-strong (green/truthful: never claim stronger than
-# declared). RLIMIT_NPROC / RLIMIT_CPU DO work on macOS.
-RLIMIT_AS_SUPPORTED = sys.platform != "darwin"
+# RLIMIT_AS (virtual-memory ceiling) is a Linux enforcement path: the kernel on
+# macOS rejects the soft=hard form of setrlimit(RLIMIT_AS, x) with "current
+# limit exceeds maximum limit", so the process driver's platform policy drops
+# memory ceilings there instead of silently claiming them (green/truthful:
+# never claim stronger than declared). RLIMIT_NPROC / RLIMIT_CPU DO work on
+# macOS. Single source of truth: core/platform facts (ADR-0007).
+RLIMIT_AS_SUPPORTED = current_facts().rlimit_as_supported
 
 
 def _spec(tmp_path: Path, sandbox_id: str, argv: list[str], env: dict | None = None) -> object:

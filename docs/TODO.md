@@ -80,3 +80,4 @@ ADR-0002 已预留 provider 位；P0 先落地单节点 PostgreSQL/Redis。多�
 - 2026-08 M3 (partial): runsc driver on real gVisor, TCP/UDS/vsock transports, durable WAL EventLog with group-commit fsync + crash recovery (ADR-0002)
 - 2026-08 P0: mature-library foundations + PostgreSQL/Redis storage providers (ADR-0003, ADR-0004)
 - 2026-08 P1 (auth excluded): sandbox resource limits, live-session quota, idempotency keys, k3s deployment form with measured gate costs (ADR-0005)
+- 2026-08 EngEx: platform abstraction — one `PlatformFacts` object + `@platform_impl` behaviour plugins + `WHIRLWIND_PLATFORM` identity simulation (ADR-0007); test runner with full output to `.test-logs/` and terse console verdict (ADR-0008); AGENTS.md gains §3.3 platform rule and §4.5 test-logging spec

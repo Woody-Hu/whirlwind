@@ -14,7 +14,6 @@ pipeline benches, no mocks:
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -23,6 +22,7 @@ import pytest
 
 from whirlwind.bus import InProcessEventBus
 from whirlwind.core import AgentDefinition, AgentSession, AgentVersion, new_agent_id, new_session_id, new_version_id
+from whirlwind.core.platform import current_facts
 from whirlwind.drivers import ProcessDriver, Resources
 from whirlwind.gateway.idempotency import IdempotencyMiddleware
 from whirlwind.harness.adapter import default_registry
@@ -35,13 +35,15 @@ from whirlwind.storage.wal_eventlog import WALEventLog
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # The resource profile below combines mem_limit_mb (RLIMIT_AS) + pids_max
-# (RLIMIT_NPROC). On macOS, RLIMIT_AS soft=hard is unsupported and RLIMIT_NPROC
-# is a *uid-global* fork-time count (ADR-0005 D1 honesty note), so a tight
+# (RLIMIT_NPROC). On macOS the process driver's platform policy drops the
+# RLIMIT_AS ceiling (kernel rejects soft=hard) and RLIMIT_NPROC is a
+# *uid-global* fork-time count (ADR-0005 D1 honesty note), so a tight
 # pids_max=64 is infeasible on a busy host with >64 uid processes — the sandbox
 # agent cannot fork its harness child (BlockingIOError EAGAIN). The profile is
 # representative on Linux only; macOS cold-start with no limits is covered by
-# test_pipeline_bench.test_cold_start_decision.
-RES_LIMIT_PROFILE_SUPPORTED = sys.platform != "darwin"
+# test_pipeline_bench.test_cold_start_decision. Gate via the platform facts
+# (ADR-0007), not raw sys.platform.
+RES_LIMIT_PROFILE_SUPPORTED = current_facts().rlimit_as_supported
 
 PASSTHROUGH_N = 10_000
 PASSTHROUGH_MIN_RATE = 20_000  # middleware-level req/s for keyless requests

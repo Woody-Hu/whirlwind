@@ -8,6 +8,17 @@ architecture doc's "AgentSession is the only scheduling unit" principle.
 from .errors import WhirlwindError, InvalidTransition, NotFound, Conflict, QuotaExceeded, SeamError, HarnessError
 from .ids import new_agent_id, new_version_id, new_session_id, new_sandbox_id, new_snapshot_id, new_cron_id, new_team_id
 from .events import SessionEvent, Surface, SurfaceOp, EventKind
+from .platform import (
+    ENV_PLATFORM,
+    SYSTEM_LINUX,
+    SYSTEM_MACOS,
+    SYSTEM_WINDOWS,
+    PlatformFacts,
+    current_facts,
+    detect_facts,
+    platform_impl,
+    resolve_impl,
+)
 from .model import (
     AgentDefinition,
     AgentVersion,
@@ -30,6 +41,8 @@ __all__ = [
     "new_agent_id", "new_version_id", "new_session_id", "new_sandbox_id", "new_snapshot_id",
     "new_cron_id", "new_team_id",
     "SessionEvent", "Surface", "SurfaceOp", "EventKind",
+    "ENV_PLATFORM", "SYSTEM_LINUX", "SYSTEM_MACOS", "SYSTEM_WINDOWS",
+    "PlatformFacts", "current_facts", "detect_facts", "platform_impl", "resolve_impl",
     "AgentDefinition", "AgentVersion", "SeamBindingDecl", "SeamConsumerDecl", "SkillRef",
     "AgentSession", "SessionStatus",
     "Sandbox", "SandboxStatus",

@@ -10,13 +10,12 @@ implementation (pull + unpack) without touching callers.
 from __future__ import annotations
 
 import os
-import platform
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from whirlwind.core.errors import WhirlwindError
+from whirlwind.core.platform import SYSTEM_LINUX, SYSTEM_MACOS, current_facts
 
 
 class ImagingError(WhirlwindError):
@@ -77,12 +76,12 @@ os.execv(argv[0], list(argv))
 
 
 def _platform_tag() -> str:
-    plat = {"linux": "linux", "darwin": "macos"}.get(sys.platform)
-    arch = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(
-        platform.machine().lower()
-    )
+    """dsh runtime wheel tag from the platform facts (ADR-0007)."""
+    facts = current_facts()
+    plat = {SYSTEM_LINUX: "linux", SYSTEM_MACOS: "macos"}.get(facts.system)
+    arch = {"x86_64": "x64", "arm64": "arm64"}.get(facts.machine)
     if plat is None or arch is None:
-        raise ImagingError(f"no dsh runtime exists for {sys.platform}/{platform.machine()}")
+        raise ImagingError(f"no dsh runtime exists for {facts.system}/{facts.machine}")
     return f"{plat}-{arch}"
 
 

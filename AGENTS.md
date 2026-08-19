@@ -34,7 +34,7 @@ Gateway (REST + SSE + MCP)          接入层：会话 / 事件流 / cron / 镜�
 
 ### 1.3 演进状态
 
-- **已落地**：M1 单进程竖切（process driver、echo/dsh adapter、Seam renderer、REST+SSE+MCP、CLI）；M2 全生命周期（suspend/resume、warm 池 CAS、时间轮 cron）；M3 部分（runsc driver 真实 gVisor 全生命周期验证、TCP/UDS/vsock 传输、durable WAL EventLog）；P0（croniter/PyYAML 成熟库、PostgreSQL/Redis provider）；P1 除 auth 外（资源限制、会话配额、幂等键、k3s 部署）。
+- **已落地**：M1 单进程竖切（process driver、echo/dsh adapter、Seam renderer、REST+SSE+MCP、CLI）；M2 全生命周期（suspend/resume、warm 池 CAS、时间轮 cron）；M3 部分（runsc driver 真实 gVisor 全生命周期验证、TCP/UDS/vsock 传输、durable WAL EventLog）；P0（croniter/PyYAML 成熟库、PostgreSQL/Redis provider）；P1 除 auth 外（资源限制、会话配额、幂等键、k3s 部署）；平台抽象（ADR-0007：PlatformFacts + platform_impl 行为插件）与测试运行器（ADR-0008：日志落盘 + 控制台简要结论）。
 - **已定稿待实施**：microsandbox（libkrun/krunkit）第三 VM 底座（[ADR-0006](docs/adr/0006-microsandbox-driver.md)，`Isolation.LIGHT_VM`）——填补 Apple Silicon 的 VM 级测试覆盖空洞。
 - **进行中/待办**：见 [docs/TODO.md](docs/TODO.md)（活文档，随每个自闭环变更增量维护）。
 
@@ -54,16 +54,20 @@ whirlwind/
 │   │   ├── 0002-m3-substrates.md        # M3 底座：runsc driver、vsock 传输、durable WAL EventLog
 │   │   ├── 0003-mature-libs.md          # cron→croniter、YAML→PyYAML 成熟库替换
 │   │   ├── 0004-production-storage.md   # PostgreSQL MetadataStore、Redis KV/Locks、后端选择
-│   │   └── 0005-edge-hardening.md       # 沙箱资源限制、会话配额、幂等键、k3s 部署
+│   │   ├── 0005-edge-hardening.md       # 沙箱资源限制、会话配额、幂等键、k3s 部署
+│   │   ├── 0006-microsandbox-driver.md  # libkrun/krunkit 第三 VM 底座（定稿待实施）
+│   │   ├── 0007-platform-abstraction.md # 平台抽象：PlatformFacts + WHIRLWIND_PLATFORM + 行为插件
+│   │   └── 0008-test-logging.md         # 测试执行日志：runner 落盘 + junit 摘要 + 简要结论
 │   ├── TODO.md                      # 演进路线活文档（P0~P4 优先级分层）
 │   ├── session-logs/                # 开发 session 记录（见 §5.3，按日期归档）
 │   └── memory/                      # 项目记忆（见 §6，长上下文 handoff 载体）
 ├── src/whirlwind/
-│   ├── core/                        # 领域层：模型 / 状态机 / 事件 / 错误 / id
+│   ├── core/                        # 领域层：模型 / 状态机 / 事件 / 错误 / id / 平台事实
 │   │   ├── model.py                     # AgentDefinition / AgentVersion / AgentSession / Sandbox / Snapshot / CronJob（pydantic）
 │   │   ├── statemachine.py              # SESSION/SANDBOX 转移表 + check_transition
 │   │   ├── events.py                    # SessionEvent / Surface
-│   │   └── errors.py                    # WhirlwindError 基类（code 字段约定）
+│   │   ├── errors.py                    # WhirlwindError 基类（code 字段约定）
+│   │   └── platform.py                  # PlatformFacts + WHIRLWIND_PLATFORM 覆盖 + @platform_impl 行为插件（ADR-0007）
 │   ├── storage/                     # 存储层：接口与实现分离（开闭原则样板）
 │   │   ├── providers.py                 # 六大 Protocol：MetadataStore / KVStore / LockProvider / ObjectStore / EventLog / EventBus
 │   │   ├── memory.py / local.py         # 进程内 / 目录实现（默认后端）
@@ -87,6 +91,8 @@ whirlwind/
 │   ├── bus/                         # 进程内事件总线（主题扇出、seq 游标）
 │   ├── runtime.py                   # WhirlwindRuntime：自底向上装配 storage→hostlet→control→gateway，后端选择（metadata_backend/kv_backend）
 │   └── cli.py                       # CLI 入口（whirlwind 命令）
+├── scripts/
+│   └── run_tests.py                     # 测试运行器：完整输出落 .test-logs/，控制台仅简要结论（ADR-0008，§4.5）
 ├── tests/
 │   ├── unit/                        # 纯逻辑单测（statemachine / model / idempotency / seam / endpoints ...）
 │   ├── integration/                 # 真实进程/文件系统/本地 HTTP；conftest.py 提供 PG/Redis 可达性检查与多后端参数化 fixture
@@ -107,7 +113,8 @@ whirlwind/
 - 新增一种**存储后端**（如 NATS EventBus、对象存储）＝ 在 `storage/` 新增 provider 实现，运行时经 `RuntimeConfig` 注入（接口见 [providers.py](src/whirlwind/storage/providers.py)）；
 - 新增一种 **harness** ＝ 在 `harness/` 新增 adapter（`HarnessAdapter.prepare(manifest) -> PreparedHarness`），平台不改内核；
 - 新增一种**传输链路** ＝ 在 `transport/transports.py` 注册 connect/serve 分支；
-- 新增一种 **Seam provider** ＝ 实现 Seam 契约三元组（Definition / Provider / Consumer）。
+- 新增一种 **Seam provider** ＝ 实现 Seam 契约三元组（Definition / Provider / Consumer）；
+- 新增一种**平台特化行为** ＝ 在实现模块用 `@platform_impl(feature, platform)` 注册插件，`resolve_impl(feature)` 按当前平台键分发（`"*"` 兜底），调用方零改动（ADR-0007）。
 
 **判断标准：如果你的改动需要修改既有接口签名或调度核心才能接入新能力，说明抽象放错了位置——先修订 ADR 再动代码。**
 
@@ -121,6 +128,7 @@ whirlwind/
 | Seam 契约 | `seam/model.py` | pydantic 模型 + Renderer | 新增 provider spec / binding |
 | `ImageRegistry` | `imaging/base.py` | 接口 | 新增 registry 实现 |
 | 传输 | `transport/transports.py` | `connect()/serve()` 函数分派 | 新增 scheme 分支 |
+| 平台事实与行为插件 | `core/platform.py` | `PlatformFacts` 冻结值对象 + `@platform_impl` 注册表 | 新增 feature 的平台特化实现（导入即接线） |
 
 ### 3.2 数据模型定义规范
 
@@ -135,9 +143,10 @@ whirlwind/
 ### 3.3 通用编码约定
 
 - Python 3.12+ / asyncio；依赖最小化（`fastapi` / `uvicorn` / `httpx` / `pydantic` / `croniter` / `pyyaml`），新增依赖必须有 ADR 论证。
-- 双平台可运行（macOS M 系列 + Linux）：`pathlib` 路径、`asyncio.subprocess`，不用 Linux-only syscall；平台差异封装在 driver/transport 层。
+- 双平台可运行（macOS M 系列 + Linux）：`pathlib` 路径、`asyncio.subprocess`，不用 Linux-only syscall；平台差异经 `core/platform` 事实 + 各层 `@platform_impl` 插件封装（见下条）。
+- **平台分支统一走 [core/platform.py](src/whirlwind/core/platform.py)（ADR-0007）**：禁止在业务代码直接判断 `sys.platform` / `platform.machine()`；事实取 `current_facts()`，行为差异用 `@platform_impl` 注册、`resolve_impl` 分发。`WHIRLWIND_PLATFORM` 环境变量（`auto|macos|linux|windows[/machine]`）仅供开发/测试模拟**身份**（派生语义随之），探测类事实（`/dev/vsock`、`CAP_SYS_ADMIN`）永不被覆盖——模拟平台不能让缺失的底座变绿（§4.2 的诚实边界）。
 - 自造轮子前先查成熟库（ADR-0003 的教训与原则）；自研组件（时间轮、WAL）需独立封装、独立测试。
-- 包管理用 `uv`（`uv sync`）；测试跑 `uv run python -m pytest ...`。
+- 包管理用 `uv`（`uv sync`）；测试一律经 runner 执行（§4.4-4.5），交互式调试才直跑 `uv run python -m pytest ...`。
 
 ---
 
@@ -178,15 +187,26 @@ ADR 既定验收基线（改动波及相关路径时必须复测）：
 
 ### 4.4 常用命令
 
+测试/benchmark 一律经 runner 执行（§4.5）；pytest 直跑仅用于交互式调试（`-x` / `-s` / 需要实时输出时）：
+
 ```bash
-uv run python -m pytest tests -q -m "not e2e"                    # 全量（单测+集成+基准）
-uv run python -m pytest tests/unit -q                            # 仅单测（最快反馈）
-uv run python -m pytest tests/integration/test_runsc_driver.py -q  # 真实 gVisor（需 runsc）
-WHIRLWIND_E2E=1 uv run python -m pytest tests/e2e -q             # 真实 DeepSeek API
-uv run python -m pytest tests/benchmark/test_pipeline_bench.py -q  # 基准复测
+uv run python scripts/run_tests.py                                        # 全量（单测+集成+基准，非 e2e）
+uv run python scripts/run_tests.py tests/unit -q                          # 仅单测（最快反馈）
+uv run python scripts/run_tests.py tests/integration/test_runsc_driver.py -q  # 真实 gVisor（需 runsc）
+uv run python scripts/run_tests.py tests/benchmark/test_pipeline_bench.py -q  # 基准复测
+WHIRLWIND_E2E=1 uv run python scripts/run_tests.py tests/e2e -q           # 真实 DeepSeek API
 ```
 
-提交前的最低门槛建议：`pytest tests -q -m "not e2e"` 全绿（被 skip 的必须能说出正当理由）。
+提交前的最低门槛建议：`run_tests.py` 全量全绿（被 skip 的必须能说出正当理由）。
+
+### 4.5 测试执行日志规范（ADR-0008）
+
+[scripts/run_tests.py](scripts/run_tests.py) 是测试/benchmark 的标准入口，契约：
+
+- **完整输出落盘，不刷控制台**：pytest 全部输出（含基准表格、子进程 chatter）写入 `.test-logs/<时间戳>-<scope>.log`（一次性开发产物，已 gitignore），按需查阅；
+- **控制台只要结论**：一行 verdict（`PASS/FAIL · N failed · N passed · N skipped · exit=N`）；失败时逐条输出 `nodeid — 异常类型: 首行异常信息`，完整 traceback 只在日志文件里；
+- **退出码即"是否错误"**：原样透传 pytest 退出码（0 成功 / 1 失败 / 2 中断 / 3 内部错误 / 4 用法错误 / 5 未收集到测试——按 FAIL 处理），CI 与 agent 据此判断；
+- 结论解析自 **junitxml**（`--junitxml` 结构化数据），不做控制台文本抓取；日志头部记录命令、退出码与平台事实（dogfood ADR-0007）。
 
 ---
 
@@ -205,7 +225,7 @@ ADR 需覆盖的设计维度（按需取舍，至少明确其一）：
 
 ### 5.2 ADR 写作规范
 
-- 位置 `docs/adr/`，命名 `NNNN-<slug>.md`，编号连续递增（下一个是 0006）。
+- 位置 `docs/adr/`，命名 `NNNN-<slug>.md`，编号连续递增（下一个是 0009）。
 - 结构对齐既有 ADR（参考 [0001](docs/adr/0001-agent-runtime-m1.md)）：标题（中英）→ Status / Date / Related / Scope → 背景与目标 → **Key Decisions（编号 D1/D2/…）** → 详细设计 → 测试策略 → 与架构文档的冲突检查 → 实施顺序 → 风险与开放点。
 - 决策必须**编号**（D1/D2/…），后续变更通过在新 ADR 中引用旧编号来修订（如 `→ Delivered (M3)`、superseded by），不回写抹除历史。
 - 与架构文档（v0.6）的偏差必须显式记录并给理由（ADR-0001 D2 是范例）。
@@ -290,4 +310,6 @@ ADR 需覆盖的设计维度（按需取舍，至少明确其一）：
 - **microsandbox**：libkrun/krunkit（`Isolation.LIGHT_VM`），需 `Virtualization.framework`/真机；colima `--vm-type krunkit` 是其一等后端（ADR-0006）
 - **k3s / macOS**：`colima start --kubernetes`（底层 k3s）即为本地集群；无头沙箱里"不支持"多为执行环境假象，应先在真机/CLI 验证再下结论
 - **dsh**：公开仓库 `github.com/deepseek-ai/deepseek-harness`（MIT）；镜像构建需本地 checkout（`refs/deepseek-harness`，可用 `WHIRLWIND_DSH_REPO` 覆盖）；两个 Python 包均不在 PyPI
+- **平台事实/模拟**：平台判断统一走 `core/platform`（ADR-0007）；`WHIRLWIND_PLATFORM=macos|linux|windows[/machine]` 仅模拟身份与派生语义，探测类事实（`/dev/vsock`、`CAP_SYS_ADMIN`）永不被覆盖，生产环境不设置
+- **测试日志**：测试/benchmark 经 `scripts/run_tests.py` 执行；完整输出在 `.test-logs/`（gitignore），控制台仅 verdict + 失败摘要（ADR-0008，§4.5）
 - **部署**：`deploy/k3s/`（镜像构建 + manifest + 可重跑 smoke 脚本）

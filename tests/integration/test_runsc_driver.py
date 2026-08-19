@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from whirlwind.core import SnapshotKind
+from whirlwind.core.platform import current_facts
 from whirlwind.drivers import (
     Density,
     DriverError,
@@ -38,23 +39,10 @@ RUNSC_REQUIRED = pytest.mark.skipif(
     not (HAS_RUNSC and HAS_BUSYBOX), reason="runsc binary or static busybox not installed"
 )
 
-CAP_SYS_ADMIN = 21
-
-
-def _have_cap(cap_bit: int) -> bool:
-    try:
-        status = Path("/proc/self/status").read_text()
-        cap_eff = int(
-            next(l.split()[1] for l in status.splitlines() if l.startswith("CapEff")), 16
-        )
-        return bool(cap_eff & (1 << cap_bit))
-    except (StopIteration, ValueError, OSError):
-        return False
-
-
 # restricted container: rootless containerd/docker drops CAP_SYS_ADMIN, so
 # runsc must run rootless, skip cgroups, and use non-sandbox networking.
-IS_RESTRICTED = os.geteuid() != 0 or not _have_cap(CAP_SYS_ADMIN)
+# Linux-container semantics via the shared platform facts (ADR-0007 D4).
+IS_RESTRICTED = current_facts().restricted
 
 
 def _busybox() -> Path:

@@ -5,8 +5,8 @@
 ## 快照
 
 - 系统形态：harness 无感的沙箱化 agent 运行时；单进程 all-in-one（M1 竖切）→ 多 substrate 演进中。
-- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider）已完成；P1 除 auth 外完成（资源限制、配额、幂等键、k3s）。详见 [docs/TODO.md](../TODO.md)。
-- 测试基线参考（历史计数）：`not e2e` 全量曾达 139 passed / 5 skipped（Argus 时代，原样保留）；以实际运行为准。
+- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider）已完成；P1 除 auth 外完成（资源限制、配额、幂等键、k3s）；平台抽象（ADR-0007）与测试运行器（ADR-0008）已落地。详见 [docs/TODO.md](../TODO.md)。
+- 测试基线（2026-08-19，macOS/arm64，经 runner）：`not e2e` 全量 202 passed / 24 skipped（skip = runsc/binary、PG/Redis 不可达、Linux-only profile、e2e 排除）；以实际运行为准。
 
 ## 进行中
 
@@ -18,6 +18,8 @@
 ## 环境事实
 
 - 双平台：macOS（M 系列）+ Linux；`runsc` 仅 Linux，无二进制则相关测试 skip（不 stub）。
+- 平台判断统一走 `core/platform`（ADR-0007）：`current_facts()` 取事实，`@platform_impl`/`resolve_impl` 分发行为插件；`WHIRLWIND_PLATFORM` 仅模拟身份（探测类事实永不被覆盖），生产不设置。
+- 测试一律经 `uv run python scripts/run_tests.py ...`（ADR-0008）：完整输出在 `.test-logs/`（gitignore），控制台仅 verdict + 失败摘要，退出码透传 pytest。
 - PostgreSQL / Redis 为 extras（`whirlwind[postgres]` / `whirlwind[redis]`）；集成测试经 conftest 探测，不可达即 skip。
 - dsh 两个 Python 包（sdk / sdk-runtime）不在 PyPI；镜像构建从本地 checkout 安装（`refs/deepseek-harness`，`WHIRLWIND_DSH_REPO` 可覆盖）。
 - E2E 需 `WHIRLWIND_E2E=1` + 真实 DeepSeek API key。
@@ -40,3 +42,5 @@
 | PostgreSQL MetadataStore、Redis KV/Locks、后端选择 | 0004 |
 | 沙箱资源限制、会话配额、幂等键、k3s 部署 | 0005 |
 | microsandbox（libkrun/krunkit）第三 VM 底座、mac 本地可测 | 0006 |
+| 平台抽象：PlatformFacts / WHIRLWIND_PLATFORM / @platform_impl 插件 | 0007 |
+| 测试执行日志：runner 落盘 + junit 摘要 + 控制台简要结论 | 0008 |

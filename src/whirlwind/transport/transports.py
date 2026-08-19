@@ -26,6 +26,8 @@ import socket
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from whirlwind.core.platform import current_facts
+
 from .endpoints import Endpoint, parse_endpoint
 
 _HANDLER = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[Any]]
@@ -36,8 +38,12 @@ VMADDR_CID_HOST = 2          # the host as seen from inside a guest
 
 
 def vsock_available() -> bool:
-    """True when this kernel can actually move bytes over virtio-vsock."""
-    return hasattr(socket, "AF_VSOCK") and Path("/dev/vsock").exists()
+    """True when this kernel can actually move bytes over virtio-vsock.
+
+    Delegates to the platform facts probe (ADR-0007): a real device check
+    (AF_VSOCK + /dev/vsock), never affected by WHIRLWIND_PLATFORM.
+    """
+    return current_facts().vsock
 
 
 async def connect(endpoint: Endpoint, timeout_s: float | None = None) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
