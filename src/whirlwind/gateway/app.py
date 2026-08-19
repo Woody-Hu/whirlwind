@@ -27,13 +27,14 @@ from pydantic import BaseModel, Field
 
 from whirlwind.control.manager import SessionManager
 from whirlwind.core import AgentDefinition, AgentVersion, CronJob
-from whirlwind.core.errors import WhirlwindError, BadRequest, Conflict, InvalidTransition, NotFound, SeamError
+from whirlwind.core.errors import WhirlwindError, BadRequest, Conflict, InvalidTransition, NotFound, QuotaExceeded, SeamError
 from whirlwind.core.model import SessionPolicy
 from whirlwind.gateway.cron import CronScheduler
+from whirlwind.gateway.idempotency import IdempotencyMiddleware
 from whirlwind.gateway.mcp import McpGateway
 from whirlwind.imaging import ImageRegistry, dsh_image_build, echo_image_build
 from whirlwind.seam.model import SeamRenderer
-from whirlwind.storage.providers import EventLog, EventBus, MetadataStore
+from whirlwind.storage.providers import EventLog, EventBus, KVStore, MetadataStore
 from whirlwind.timer.cron import CronExpr, CronParseError
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class GatewayDeps:
     mcp: McpGateway
     repo_root: Path
     version: str = "0.1.0"
+    kv: KVStore | None = None  # enables Idempotency-Key on mutating routes (ADR-0005 D3)
 
 
 # ------------------------------------------------------------- request models
@@ -98,6 +100,7 @@ _STATUS_BY_ERROR = {
     NotFound: 404,
     Conflict: 409,
     InvalidTransition: 409,
+    QuotaExceeded: 429,
     SeamError: 400,
     BadRequest: 400,
 }
@@ -129,6 +132,8 @@ def create_app(
             await on_shutdown()
 
     app = FastAPI(title="whirlwind-gateway", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    if deps.kv is not None:
+        app.add_middleware(IdempotencyMiddleware, kv=deps.kv)
 
     @app.exception_handler(WhirlwindError)
     async def _whirlwind_error(_: Request, exc: WhirlwindError) -> JSONResponse:

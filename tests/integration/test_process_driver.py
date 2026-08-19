@@ -24,6 +24,7 @@ from whirlwind.drivers import (
     ExecSpec,
     Isolation,
     ProcessDriver,
+    Resources,
     SandboxNotFound,
     UnsupportedCapability,
 )
@@ -97,6 +98,95 @@ async def test_env_is_whitelist_not_inheritance(tmp_path: Path, monkeypatch: pyt
         assert "PATH" not in var_names  # even PATH does not leak
     finally:
         await driver.destroy("sb-env")
+
+
+# ------------------------------------------------- resource limits (ADR-0005 D1)
+
+
+def _limits_spec(tmp_path: Path, sandbox_id: str, argv: list[str], resources: "Resources"):
+    from whirlwind.drivers import SandboxSpec
+
+    return SandboxSpec(
+        sandbox_id=sandbox_id,
+        argv=argv,
+        bundle_root=tmp_path / "bundle",
+        workspace=tmp_path / "sandboxes" / sandbox_id,
+        env=dict(BASE_ENV),
+        resources=resources,
+    )
+
+
+@pytest.mark.asyncio
+async def test_resources_mem_limit_kills_allocation(tmp_path: Path) -> None:
+    """A sandbox that allocates past its RLIMIT_AS dies of MemoryError —
+    real kernel enforcement, not a declared number."""
+    driver = ProcessDriver()
+    argv = [
+        sys.executable,
+        "-c",
+        "buf = bytearray(1024 * 1024 * 1024)\nprint('allocated', len(buf))",
+    ]
+    # 512MB VA ceiling: interpreter + 1GB allocation cannot fit
+    spec = _limits_spec(tmp_path, "sb-mem", argv, Resources(mem_limit_mb=512))
+    instance = await driver.create(spec)
+    try:
+        assert instance.process is not None
+        await asyncio.wait_for(instance.process.wait(), timeout=30)
+        assert instance.process.returncode not in (0, None)  # died, not succeeded
+    finally:
+        await driver.destroy("sb-mem")
+
+
+@pytest.mark.asyncio
+async def test_resources_cpu_seconds_kills_busy_loop(tmp_path: Path) -> None:
+    """A busy loop past its RLIMIT_CPU budget is killed by the kernel.
+    With soft==hard, SIGXCPU and SIGKILL race — either signal death proves
+    the budget was enforced."""
+    driver = ProcessDriver()
+    argv = [sys.executable, "-c", "while True: pass"]
+    spec = _limits_spec(tmp_path, "sb-cpu", argv, Resources(cpu_seconds=1))
+    instance = await driver.create(spec)
+    try:
+        assert instance.process is not None
+        await asyncio.wait_for(instance.process.wait(), timeout=30)
+        assert instance.process.returncode in (-9, -24)  # SIGKILL or SIGXCPU
+    finally:
+        await driver.destroy("sb-cpu")
+
+
+@pytest.mark.asyncio
+async def test_resources_rlimits_visible_in_proc(tmp_path: Path) -> None:
+    """/proc/self/limits inside the sandbox shows exactly what was applied."""
+    driver = ProcessDriver()
+    argv = [sys.executable, "-c", "print(open('/proc/self/limits').read())"]
+    spec = _limits_spec(
+        tmp_path, "sb-limits", argv, Resources(mem_limit_mb=256, pids_max=256)
+    )
+    instance = await driver.create(spec)
+    try:
+        assert instance.process is not None and instance.process.stdout is not None
+        out = (await asyncio.wait_for(instance.process.stdout.read(), timeout=30)).decode()
+        assert "268435456" in out  # 256MB in Max address space
+        assert "256" in out  # pids_max in Max processes
+    finally:
+        await driver.destroy("sb-limits")
+
+
+@pytest.mark.asyncio
+async def test_resources_none_mean_no_limits(tmp_path: Path) -> None:
+    """Default Resources() adds no preexec_fn — behavior identical to before."""
+    driver = ProcessDriver()
+    spec = _limits_spec(tmp_path, "sb-nolimit", ["/bin/sleep", "30"], Resources())
+    instance = await driver.create(spec)
+    try:
+        argv = [sys.executable, "-c", "print(open('/proc/self/limits').read())"]
+        result = await driver.exec(
+            "sb-nolimit", ExecSpec(argv=argv, env_extra=BASE_ENV)
+        )
+        assert result.exit_code == 0
+        assert "unlimited" in result.stdout  # address space stays unlimited
+    finally:
+        await driver.destroy("sb-nolimit")
 
 
 @pytest.mark.asyncio

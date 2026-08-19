@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 from whirlwind.timer import CronExpr, CronParseError, HierarchicalTimer
 
 
@@ -188,5 +190,24 @@ def test_cron_parse_errors():
 
 
 def test_cron_question_mark_alias():
-    expr = CronExpr.parse("*/5 ? * ? *")
-    assert 5 in expr.minute and 0 in expr.minute
+    from datetime import datetime
+
+    expr = CronExpr.parse("*/5 ? * ? *")  # ? accepted as * in any field
+    nxt = expr.next_after(datetime(2026, 8, 18, 10, 0))
+    assert (nxt.hour, nxt.minute) == (10, 5)
+
+
+def test_cron_names_in_dow_and_month_fields():
+    from datetime import datetime
+
+    weekdays = CronExpr.parse("* * * * MON-FRI")
+    assert weekdays.next_after(datetime(2026, 8, 22, 10, 0)).weekday() == 0  # sat -> mon
+    jan = CronExpr.parse("0 12 1 JAN *")
+    nxt = jan.next_after(datetime(2026, 8, 19, 0, 0))
+    assert (nxt.year, nxt.month, nxt.day) == (2027, 1, 1)
+
+
+def test_cron_rejects_non_five_field_dialects():
+    for bad in ["@hourly", "* * * * * *", "0 0 12 ? * MON-SUN *"]:
+        with pytest.raises(CronParseError):
+            CronExpr.parse(bad)

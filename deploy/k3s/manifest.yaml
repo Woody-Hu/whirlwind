@@ -1,0 +1,153 @@
+# Whirlwind all-in-one runtime on k3s (ADR-0005 D4).
+# Single replica, memory backends, PVC-backed data dir, NodePort service.
+# Sandboxes spawn as child processes inside the pod — no privileges required.
+#
+# Apply with:
+#   kubectl apply -f manifest.yaml
+# (image must be imported first: ./build-image.sh whirlwind:dev)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: whirlwind
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: whirlwind-config
+  namespace: whirlwind
+data:
+  # LLM egress target (the relay owns the real credential host-side)
+  llm-upstream: "https://api.deepseek.com"
+  # live-session admission cap (ADR-0005 D2); unset the arg entirely to go uncapped
+  max-live-sessions: "64"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: whirlwind-secrets
+  namespace: whirlwind
+type: Opaque
+stringData:
+  # placeholder — override at deploy time (kubectl create secret … --dry-run -o yaml | kubectl apply -f -)
+  DEEPSEEK_API_KEY: "changeme"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: whirlwind-data
+  namespace: whirlwind
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path   # k3s built-in provisioner
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whirlwind
+  namespace: whirlwind
+  labels:
+    app: whirlwind
+spec:
+  replicas: 1                    # single replica: in-process bus + memory backends (ADR-0004 D4)
+  strategy:
+    # RWO PVC + 1 replica: RollingUpdate would deadlock waiting for the old pod
+    # to release the volume; Recreate keeps the redeploy honest.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: whirlwind
+  template:
+    metadata:
+      labels:
+        app: whirlwind
+    spec:
+      containers:
+        - name: whirlwind
+          image: whirlwind:dev
+          imagePullPolicy: IfNotPresent
+          command: ["whirlwind"]
+          args:
+            - serve
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8410"
+            - --data-dir
+            - /data
+            - --repo-root
+            - /app
+            - --llm-upstream
+            - $(LLM_UPSTREAM)
+            - --max-live-sessions
+            - $(MAX_LIVE_SESSIONS)
+          env:
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: whirlwind-secrets
+                  key: DEEPSEEK_API_KEY
+            - name: LLM_UPSTREAM
+              valueFrom:
+                configMapKeyRef:
+                  name: whirlwind-config
+                  key: llm-upstream
+            - name: MAX_LIVE_SESSIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: whirlwind-config
+                  key: max-live-sessions
+          ports:
+            - name: http
+              containerPort: 8410
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 5
+          resources:
+            # pod-level ceiling; per-sandbox ceilings are a separate
+            # RuntimeConfig concern (ADR-0005 D1)
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: whirlwind-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whirlwind
+  namespace: whirlwind
+spec:
+  type: NodePort
+  selector:
+    app: whirlwind
+  ports:
+    - name: http
+      port: 8410
+      targetPort: http
+      nodePort: 30841

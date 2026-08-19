@@ -1,8 +1,9 @@
 """HarnessAdapter unit tests: manifest -> native config compilation.
 
-The rendered cordis.yml is parsed back with a real YAML parser where one is
-importable (uvicorn ships none; the runtime env may) — otherwise the structure
-is asserted textually. Fail-closed behaviour is the point of several cases.
+The rendered cordis.yml is asserted structurally (parsed back with PyYAML —
+a runtime dependency since ADR-0003); exact emitter formatting is the
+library's implementation detail. Fail-closed behaviour is the point of
+several cases.
 """
 
 from __future__ import annotations
@@ -10,9 +11,10 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 
 from whirlwind.core import AgentVersion, HarnessError, SeamBindingDecl, SeamConsumerDecl, SkillRef
-from whirlwind.harness.adapter import DshAdapter, EchoAdapter, _yaml_dump, default_registry
+from whirlwind.harness.adapter import DshAdapter, EchoAdapter, default_registry
 from whirlwind.seam.model import SeamRenderer
 
 WS = "/srv/sandbox/ws"
@@ -95,7 +97,8 @@ def test_dsh_adapter_injects_adopt_or_create_shim() -> None:
     has no resume path of its own)."""
     prepared = DshAdapter().prepare(_manifest(_version("dsh", [])))
     cordis = prepared.files[".whirlwind/cordis.yml"]
-    assert "name: './whirlwind-resume-shim.mjs'" in cordis
+    by_id = {c["id"]: c for c in yaml.safe_load(cordis)}
+    assert by_id["resume-shim"]["name"] == "./whirlwind-resume-shim.mjs"
     shim = prepared.files[".whirlwind/whirlwind-resume-shim.mjs"]
     assert "export const inject = ['agents', 'sessionPersistence']" in shim
     assert "registry.resume" in shim
@@ -132,15 +135,13 @@ def test_dsh_adapter_skips_mcp_only_bindings() -> None:
     assert "relay-web" not in prepared.files[".whirlwind/cordis.yml"]
 
 
-def test_rendered_cordis_is_parseable_yaml() -> None:
-    try:
-        import yaml  # type: ignore[import-not-found]
-    except ImportError:
-        pytest.skip("pyyaml not importable in this env")
+def test_rendered_cordis_is_parseable_and_deterministic_yaml() -> None:
     seams = [_decl("shell.v1", "sandbox-bash")]
     skills = [SkillRef(name="s", version="1")]
-    prepared = DshAdapter().prepare(_manifest(_version("dsh", seams), skills=[(skills[0], "/x")]))
-    doc = yaml.safe_load(prepared.files[".whirlwind/cordis.yml"])
+    manifest = _manifest(_version("dsh", seams), skills=[(skills[0], "/x")])
+    cordis = DshAdapter().prepare(manifest).files[".whirlwind/cordis.yml"]
+    assert cordis == DshAdapter().prepare(manifest).files[".whirlwind/cordis.yml"]  # deterministic
+    doc = yaml.safe_load(cordis)
     assert isinstance(doc, list)
     by_id = {c["id"]: c for c in doc}
     assert by_id["skills"]["config"]["customSkillDirs"] == [f"{WS}/.whirlwind/skills"]
@@ -154,12 +155,3 @@ def test_registry_resolves_and_fails_closed() -> None:
     assert registry.adapter_for("echo").harness == "echo"
     with pytest.raises(HarnessError, match="no adapter"):
         registry.adapter_for("bogus")
-
-
-def test_yaml_dump_escapes_and_serializes_scalars() -> None:
-    assert _yaml_dump({"k": "it's: fine"}) == "k: 'it''s: fine'"
-    assert _yaml_dump({"n": None, "t": True, "f": False, "i": 3}) == "n: null\nt: true\nf: false\ni: 3"
-    assert _yaml_dump([]) == "[]"
-    assert _yaml_dump({}) == "{}"
-    with pytest.raises(TypeError):
-        _yaml_dump({"bad": object()})

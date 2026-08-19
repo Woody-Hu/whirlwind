@@ -23,7 +23,7 @@ from whirlwind.core import (
     SessionStatus,
     new_session_id,
 )
-from whirlwind.core.errors import Conflict, InvalidTransition, NotFound
+from whirlwind.core.errors import Conflict, InvalidTransition, NotFound, QuotaExceeded
 from whirlwind.core.statemachine import SESSION_TRANSITIONS, check_transition
 from whirlwind.hostlet import Hostlet
 from whirlwind.storage.providers import MetadataStore
@@ -44,13 +44,16 @@ class SessionManager:
         bus: InProcessEventBus,
         lifecycle: LifecycleManager,
         pool: WarmPool | None = None,
+        max_live_sessions: int | None = None,
     ) -> None:
         self.store = store
         self.hostlet = hostlet
         self.bus = bus
         self.lifecycle = lifecycle
         self.pool = pool
+        self.max_live_sessions = max_live_sessions  # admission gate (ADR-0005 D2); None = uncapped
         self._dispatch_locks: dict[str, asyncio.Lock] = {}
+        self._admission_lock = asyncio.Lock()
         lifecycle.on_expire(self._on_expire)
         self._status_task: asyncio.Task | None = None
 
@@ -83,6 +86,24 @@ class SessionManager:
             raise NotFound(f"agent {agent_id}")
         if await self.store.get_version(version_id) is None:
             raise NotFound(f"version {version_id}")
+        if self.max_live_sessions is not None:
+            # Live = not CLOSED (suspended sessions hold snapshots and count).
+            # Counted from the MetadataStore — the source of truth — so the
+            # tally self-heals; the lock closes the in-process check/create
+            # race (cross-process hardening is deferred with tenancy).
+            async with self._admission_lock:
+                live = sum(
+                    1
+                    for s in await self.store.list_sessions()
+                    if s.status != SessionStatus.CLOSED
+                )
+                if live >= self.max_live_sessions:
+                    raise QuotaExceeded(
+                        f"live session cap reached ({self.max_live_sessions})",
+                        detail={"max_live_sessions": self.max_live_sessions, "live": live},
+                    )
+                session = AgentSession(id=new_session_id(), agent_id=agent_id, agent_version_id=version_id)
+                return await self.store.create_session(session)
         session = AgentSession(id=new_session_id(), agent_id=agent_id, agent_version_id=version_id)
         return await self.store.create_session(session)
 

@@ -402,3 +402,147 @@ async def test_session_suspend_resume_over_rest(gateway: httpx.AsyncClient) -> N
     assert await _wait_until(grew), "post-resume turn never completed"
     closed = (await gateway.post(f"/sessions/{session['id']}/close")).json()
     assert closed["status"] == "closed"
+
+
+# ------------------------------------------- production backends (ADR-0004 D5.4)
+
+
+@pytest.fixture
+async def prod_backends_url(
+    tmp_path: Path, llm_upstream: str, postgres_dsn: str, redis_url: str
+) -> str:
+    """A runtime assembled with PostgreSQL metadata + Redis hot state."""
+    import asyncpg
+    from redis import asyncio as aioredis
+
+    conn = await asyncpg.connect(postgres_dsn)
+    try:
+        await conn.execute(
+            "TRUNCATE agents, agent_versions, sessions, sandboxes, snapshots, crons RESTART IDENTITY"
+        )
+    finally:
+        await conn.close()
+    client = aioredis.from_url(redis_url, decode_responses=True)
+    try:
+        await client.flushdb()
+    finally:
+        await client.aclose()
+
+    runtime = WhirlwindRuntime(
+        RuntimeConfig(
+            data_dir=tmp_path / "runtime",
+            repo_root=REPO_ROOT,
+            api_key_env="WHIRLWIND_TEST_KEY",
+            llm_upstream=llm_upstream,
+            metadata_backend="postgres",
+            postgres_dsn=postgres_dsn,
+            kv_backend="redis",
+            redis_url=redis_url,
+        )
+    )
+    server = uvicorn.Server(uvicorn.Config(runtime.app, host="127.0.0.1", port=0, log_level="warning"))
+    task = asyncio.get_running_loop().create_task(server.serve())
+    for _ in range(200):
+        if server.started:
+            break
+        await asyncio.sleep(0.05)
+    assert server.started
+    port = int(server.servers[0].sockets[0].getsockname()[1])  # type: ignore[index]
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    await asyncio.wait_for(task, timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_production_backends_serve_a_real_turn(
+    prod_backends_url: str, postgres_dsn: str, tmp_path: Path
+) -> None:
+    """The headline runtime-level property: PG + Redis wired through the
+    composition root serve a real sandboxed turn — and the metadata lands
+    in PostgreSQL, surviving the server process."""
+    async with httpx.AsyncClient(base_url=prod_backends_url, timeout=60.0) as client:
+        await _build_echo_image(client)
+        agent = await _create_echo_agent(client, "prod-agent")
+        session = (await client.post("/sessions", json={"agent_id": agent["agent"]["id"]})).json()
+        events = await _run_turn_to_end(client, session["id"], "hello production backends")
+        assert events[-1]["type"] == "turn/end"
+
+    # metadata really went to PostgreSQL and survives the "process" dying
+    from whirlwind.storage.postgres import PostgresMetadataStore
+
+    store = PostgresMetadataStore(postgres_dsn, skills_dir=tmp_path / "skills")
+    await store.start()
+    try:
+        assert (await store.get_agent_by_name("prod-agent")).id == agent["agent"]["id"]
+        assert (await store.get_session(session["id"])).id == session["id"]
+    finally:
+        await store.aclose()
+
+
+# --------------------------------------------- quota backpressure (ADR-0005 D2)
+
+
+@pytest.mark.asyncio
+async def test_live_session_cap_surfaces_as_http_429(
+    tmp_path: Path, llm_upstream: str
+) -> None:
+    """The admission gate must reach the HTTP face as 429 quota-exceeded."""
+    runtime = WhirlwindRuntime(
+        RuntimeConfig(
+            data_dir=tmp_path / "runtime",
+            repo_root=REPO_ROOT,
+            api_key_env="WHIRLWIND_TEST_KEY",
+            llm_upstream=llm_upstream,
+            max_live_sessions=1,
+        )
+    )
+    server = uvicorn.Server(uvicorn.Config(runtime.app, host="127.0.0.1", port=0, log_level="warning"))
+    task = asyncio.get_running_loop().create_task(server.serve())
+    for _ in range(200):
+        if server.started:
+            break
+        await asyncio.sleep(0.05)
+    assert server.started
+    port = int(server.servers[0].sockets[0].getsockname()[1])  # type: ignore[index]
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=30.0) as client:
+            await _build_echo_image(client)
+            agent = await _create_echo_agent(client, "capped-agent")
+            first = await client.post("/sessions", json={"agent_id": agent["agent"]["id"]})
+            assert first.status_code == 200, first.text
+            second = await client.post("/sessions", json={"agent_id": agent["agent"]["id"]})
+            assert second.status_code == 429
+            body = second.json()
+            assert body["error"]["code"] == "whirlwind/quota-exceeded"
+            assert body["error"]["detail"]["max_live_sessions"] == 1
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, timeout=10)
+
+
+# ----------------------------------------- idempotency keys (ADR-0005 D3)
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_replays_session_create(gateway: httpx.AsyncClient) -> None:
+    """A retried session create with the same Idempotency-Key returns the
+    same session (replayed), and exactly one session exists server-side."""
+    await _build_echo_image(gateway)
+    agent = await _create_echo_agent(gateway, "idem-agent")
+    headers = {"Idempotency-Key": "create-once-1"}
+    payload = {"agent_id": agent["agent"]["id"]}
+
+    first = await gateway.post("/sessions", json=payload, headers=headers)
+    assert first.status_code == 200, first.text
+    # the retry a timeout-flustered client would send
+    second = await gateway.post("/sessions", json=payload, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+
+    sessions = (await gateway.get("/sessions", params={"agent_id": agent["agent"]["id"]})).json()
+    assert len(sessions) == 1  # one session, not two
+
+    # a different key is a different request — creates a second session
+    third = await gateway.post("/sessions", json=payload, headers={"Idempotency-Key": "other"})
+    assert third.status_code == 200
+    assert third.json()["id"] != first.json()["id"]

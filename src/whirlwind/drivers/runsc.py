@@ -129,7 +129,10 @@ def _render_oci_config(
     Layout decisions:
     - rootfs is the image bundle bind-mounted at `/` (cheap, no copy);
     - the private workspace is bind-mounted at `cwd` (the only writable area);
-    - process args are rootfs-relative; env is exactly the spec whitelist.
+    - process args are rootfs-relative; env is exactly the spec whitelist;
+    - spec.resources become process rlimits (always) plus cgroup-backed
+      linux.resources for memory/pids (the primary gVisor enforcement path,
+      ADR-0005 D1) — applied when runsc runs with cgroup support.
     """
     mounts: list[dict[str, Any]] = [
         {
@@ -149,6 +152,28 @@ def _render_oci_config(
             "options": ["rbind", "rprivate", "rw"],
         }
     )
+    rlimits: list[dict[str, Any]] = [{"type": "RLIMIT_NOFILE", "hard": 65536, "soft": 65536}]
+    linux: dict[str, Any] = {
+        "namespaces": [
+            {"type": "pid"},
+            {"type": "network"},
+            {"type": "ipc"},
+            {"type": "uts"},
+            {"type": "mount"},
+        ]
+    }
+    res = spec.resources
+    if res.mem_limit_mb is not None:
+        as_bytes = res.mem_limit_mb * 1024 * 1024
+        rlimits.append({"type": "RLIMIT_AS", "hard": as_bytes, "soft": as_bytes})
+        linux["resources"] = linux.get("resources") or {}
+        linux["resources"]["memory"] = {"limit": as_bytes}
+    if res.cpu_seconds is not None:
+        rlimits.append({"type": "RLIMIT_CPU", "hard": res.cpu_seconds, "soft": res.cpu_seconds})
+    if res.pids_max is not None:
+        rlimits.append({"type": "RLIMIT_NPROC", "hard": res.pids_max, "soft": res.pids_max})
+        linux["resources"] = linux.get("resources") or {}
+        linux["resources"]["pids"] = {"limit": res.pids_max}
     return {
         "ociVersion": _OCI_VERSION,
         "process": {
@@ -157,20 +182,12 @@ def _render_oci_config(
             "args": [_in_rootfs(bundle_root, spec.argv[0]), *spec.argv[1:]],
             "env": [f"{k}={v}" for k, v in spec.env.items()],
             "cwd": cwd,
-            "rlimits": [{"type": "RLIMIT_NOFILE", "hard": 65536, "soft": 65536}],
+            "rlimits": rlimits,
         },
         "root": {"path": "rootfs", "readonly": False},
         "hostname": spec.sandbox_id[:63] or "whirlwind",
         "mounts": mounts,
-        "linux": {
-            "namespaces": [
-                {"type": "pid"},
-                {"type": "network"},
-                {"type": "ipc"},
-                {"type": "uts"},
-                {"type": "mount"},
-            ]
-        },
+        "linux": linux,
     }
 
 

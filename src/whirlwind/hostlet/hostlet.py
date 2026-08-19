@@ -42,7 +42,7 @@ from whirlwind.core import (
     new_sandbox_id,
 )
 from whirlwind.core.errors import WhirlwindError, Conflict, NotFound
-from whirlwind.drivers import SandboxDriver, SandboxSpec, SnapshotArtifact
+from whirlwind.drivers import Resources, SandboxDriver, SandboxSpec, SnapshotArtifact
 from whirlwind.harness.adapter import AdapterRegistry
 from whirlwind.imaging import ImageRegistry
 from whirlwind.seam.model import SeamRenderer
@@ -59,6 +59,7 @@ class HostletConfig:
     api_key_env: str = "DEEPSEEK_API_KEY"
     llm_upstream: str = "https://api.deepseek.com"
     agent_boot_timeout_s: float = 30.0
+    sandbox_resources: Resources | None = None  # per-sandbox ceilings (ADR-0005 D1)
 
 
 @dataclass
@@ -240,6 +241,7 @@ class Hostlet:
             bundle_root=bundle.root,
             workspace=workspace,
             env=sandbox_env,
+            resources=self.config.sandbox_resources or Resources(),
         )
         record = Sandbox(
             id=sandbox_id,

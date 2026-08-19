@@ -29,6 +29,10 @@ class Conflict(WhirlwindError):
     code = "whirlwind/conflict"
 
 
+class QuotaExceeded(WhirlwindError):
+    code = "whirlwind/quota-exceeded"
+
+
 class SeamError(WhirlwindError):
     code = "whirlwind/seam"
 
