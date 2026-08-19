@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,10 @@ _RUNSC_CAPS = Caps(
 )
 
 _OCI_VERSION = "1.0.2"
+
+# The workspace is bind-mounted at this rootfs path (process cwd inside the
+# sandbox; also the cwd for exec'd processes).
+_WORKSPACE_MOUNT = "/workspace"
 
 # minimal rootfs mounts the guest kernel needs to boot a python process
 _BASE_MOUNTS: list[dict[str, Any]] = [
@@ -117,7 +122,7 @@ def _render_oci_config(
     bundle_root: Path,
     spec: SandboxSpec,
     *,
-    cwd: str = "/workspace",
+    cwd: str = _WORKSPACE_MOUNT,
 ) -> dict[str, Any]:
     """Render an OCI runtime-spec config.json from a fully-resolved SandboxSpec.
 
@@ -190,52 +195,75 @@ class RunscDriver(SandboxDriver):
         state_root: Path | None = None,
         snapshots_root: Path | None = None,
         work_root: Path | None = None,
-        net: str = "netstack",
+        net: str = "sandbox",
+        platform: str | None = None,
+        rootless: bool = False,
+        ignore_cgroups: bool = False,
     ) -> None:
         self._runsc_bin = runsc_bin
         self._state_root = Path(state_root or "/run/argus-runsc")
         self._snapshots_root = snapshots_root
         # OCI bundle staging area (config.json + rootfs dir per sandbox)
         self._work_root = work_root
+        # runsc --network: "sandbox" (per-sandbox netstack, the net_policy
+        # capability), "host", or "none". Rootless deployments must pick
+        # host/none — runsc rejects sandbox networking without CAP_SYS_ADMIN.
         self._net = net
+        self._platform = platform
+        self._rootless = rootless
+        self._ignore_cgroups = ignore_cgroups
         self._instances: dict[str, Instance] = {}
 
     # ------------------------------------------------------------ helpers
 
     def _cli(self, *args: str) -> list[str]:
-        return [
-            self._runsc_bin,
-            "--root",
-            str(self._state_root),
-            "--network",
-            self._net,
-            *args,
-        ]
+        cli = [self._runsc_bin, "--root", str(self._state_root), "--network", self._net]
+        if self._platform is not None:
+            cli += ["--platform", self._platform]
+        if self._rootless:
+            cli += ["--rootless=true"]
+        if self._ignore_cgroups:
+            cli += ["--ignore-cgroups"]
+        return cli + list(args)
 
     async def _run(self, *args: str, timeout_s: float = 60.0) -> tuple[int, str, str]:
-        """One runsc subprocess; surfaces failures as DriverError."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *self._cli(*args),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            raise DriverError(
-                f"runsc binary not found ({self._runsc_bin!r}); install gVisor or use the process driver",
-                detail={"required": "runsc", "hint": "sudo make install from github.com/google/gvisor"},
-            ) from None
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise DriverError(f"runsc {args[0] if args else ''} timed out after {timeout_s}s") from None
-        return (
-            proc.returncode if proc.returncode is not None else -1,
-            out.decode(errors="replace"),
-            err.decode(errors="replace"),
-        )
+        """One runsc subprocess; surfaces failures as DriverError.
+
+        Output goes to temp files, not pipes: in --detach mode the runsc
+        parent exits quickly while the sandbox processes it spawned inherit
+        the stdout/stderr fds — a pipe read would block on their EOF forever.
+        proc.wait() targets the parent's exit code, which is what we want.
+        """
+        with (
+            tempfile.TemporaryFile() as out_f,
+            tempfile.TemporaryFile() as err_f,
+        ):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *self._cli(*args),
+                    stdout=out_f,
+                    stderr=err_f,
+                )
+            except FileNotFoundError:
+                raise DriverError(
+                    f"runsc binary not found ({self._runsc_bin!r}); "
+                    "install gVisor or use the process driver",
+                    detail={"required": "runsc", "hint": "storage.googleapis.com/gvisor/releases"},
+                ) from None
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=timeout_s)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise DriverError(
+                    f"runsc {args[0] if args else ''} timed out after {timeout_s}s"
+                ) from None
+            out_f.seek(0)
+            err_f.seek(0)
+            out = out_f.read().decode(errors="replace")
+            err = err_f.read().decode(errors="replace")
+            rc = proc.returncode if proc.returncode is not None else -1
+        return rc, out, err
 
     def _bundle_dir(self, sandbox_id: str) -> Path:
         if self._work_root is None:
@@ -326,10 +354,12 @@ class RunscDriver(SandboxDriver):
 
     async def exec(self, sandbox_id: str, spec: ExecSpec) -> ExecResult:
         instance = self.instance(sandbox_id)
-        args = ["exec", "--cwd", str(instance.spec.workspace)]
+        # cwd must be the rootfs-relative mount point of the workspace
+        # (the bind destination in the OCI config), not the host path.
+        args = ["exec", "--cwd", _WORKSPACE_MOUNT]
         for key, value in spec.env_extra.items():
             args += ["--env", f"{key}={value}"]
-        args += [sandbox_id, "--", *spec.argv]
+        args += [sandbox_id, *spec.argv]
         rc, out, err = await self._run(*args, timeout_s=spec.timeout_s + 5.0)
         return ExecResult(exit_code=rc, stdout=out, stderr=err)
 
