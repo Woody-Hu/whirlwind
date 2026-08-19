@@ -50,6 +50,8 @@ skill / seam（tool）配置可注入 agent 并生效。
 3. `SandboxDriver` 接口按架构 4.4 完整实现（caps 声明、create/exec/pause/checkpoint/restore/destroy），
    `process` driver 如实声明 `isolation=Process, snapshot_full=False, snapshot_data=True, density=High, net_policy=False`。
    runsc/firecracker driver 按同一接口在 M3（Linux 集群形态）加入，调度器零改动。
+   **→ 已兑现（M3）**：runsc driver 已落地并对真实 gVisor 全生命周期验证，见
+   [ADR-0002 D1](0002-m3-substrates.md)。
 
 **隔离边界（process driver，如实声明）**：独立进程组 + 独立工作区目录（cwd 限定 workspace root）+
 环境变量白名单（不继承宿主任意 env）+ LLM 出站仅经 relay URL 注入。这是配置级隔离而非内核级隔离，
@@ -166,6 +168,8 @@ Cron 表达式解析自实现（5 字段标准语义），不引入依赖。
 
 五个 provider 接口（`MetadataStore / KVStore / EventBus / ObjectStore / EventLog`）+ M1 实现：
 内存 dict / asyncio.Queue / 本地目录 / JSONL。SQLite 持久化选项 M2 加。全部模块只依赖接口。
+**→ 演进（M3）**：EventLog 已升级为 durable WAL 实现（组提交 fsync + 崩溃恢复），见
+[ADR-0002 D3](0002-m3-substrates.md)。
 
 ## 3. 包结构
 
