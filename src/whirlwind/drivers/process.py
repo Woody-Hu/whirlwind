@@ -24,6 +24,7 @@ from functools import partial
 from pathlib import Path
 
 from whirlwind.core import SnapshotKind, new_snapshot_id
+from whirlwind.core.platform import platform_impl, resolve_impl
 
 from .base import (
     Caps,
@@ -49,6 +50,34 @@ _PROCESS_CAPS = Caps(
     net_policy=False,
     density=Density.HIGH,
 )
+
+# (rlimit, soft, hard, label) triples the platform policy decided to apply.
+# The plan is resolved in the PARENT (ADR-0007 D3) — only the precomputed list
+# crosses into preexec_fn.
+_LimitPlan = list[tuple[int, int, int, str]]
+
+
+@platform_impl("drivers.process.rlimits", "*")
+def _rlimits_posix(res: Resources) -> _LimitPlan:
+    """POSIX-default policy (Linux): all three ceilings map to rlimits."""
+    plan: _LimitPlan = []
+    if res.mem_limit_mb is not None:
+        as_bytes = res.mem_limit_mb * 1024 * 1024
+        plan.append((resource.RLIMIT_AS, as_bytes, as_bytes, "mem_limit_mb"))
+    if res.cpu_seconds is not None:
+        # soft triggers SIGXCPU, hard kills — equal means no grace period
+        plan.append((resource.RLIMIT_CPU, res.cpu_seconds, res.cpu_seconds, "cpu_seconds"))
+    if res.pids_max is not None:
+        plan.append((resource.RLIMIT_NPROC, res.pids_max, res.pids_max, "pids_max"))
+    return plan
+
+
+@platform_impl("drivers.process.rlimits", "macos")
+def _rlimits_macos(res: Resources) -> _LimitPlan:
+    """macOS policy: the kernel rejects setrlimit(RLIMIT_AS, soft=hard) with
+    "current limit exceeds maximum limit", so memory ceilings are honestly
+    dropped instead of silently claimed (ADR-0005 D1 caveat); CPU/NPROC apply."""
+    return [l for l in _rlimits_posix(res) if l[0] != resource.RLIMIT_AS]
 
 
 def _merkle_root(root: Path) -> tuple[str, int, int]:
@@ -106,6 +135,13 @@ class ProcessDriver(SandboxDriver):
             if not from_snapshot.path.is_dir():
                 raise DriverError(f"snapshot artifact missing: {from_snapshot.path}")
             _copy_tree(from_snapshot.path, spec.workspace)
+        # Resolve the platform rlimit policy in the parent (ADR-0007 D3) and
+        # validate each planned limit against the process hard cap pre-fork:
+        # a mismatch must surface as a clean DriverError, not a preexec_fn crash.
+        res = spec.resources
+        limits = resolve_impl("drivers.process.rlimits")(res) if res != Resources() else []
+        for which, soft, _hard, label in limits:
+            _check_limit_feasible(which, soft, label)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.argv,
@@ -115,9 +151,7 @@ class ProcessDriver(SandboxDriver):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # own process group (POSIX: Linux + macOS)
-                preexec_fn=partial(_apply_rlimits, spec.resources)
-                if spec.resources != Resources()
-                else None,
+                preexec_fn=partial(_apply_rlimits, limits) if limits else None,
             )
         except OSError as exc:
             raise DriverError(f"failed to launch sandbox: {exc}") from exc
@@ -203,27 +237,50 @@ class ProcessDriver(SandboxDriver):
         self._instances.pop(sandbox_id, None)
 
 
-def _apply_rlimits(res: Resources):
-    """preexec_fn body: set spec.resources as POSIX rlimits before exec.
+def _check_limit_feasible(which: int, res_value: int, label: str) -> None:
+    """Validate a requested soft/hard limit against the process hard cap in
+    the *parent* before fork. Runs in the parent (async-signal-safe not
+    required); failures surface as pre-spawn DriverError instead of a
+    forked-child crash.
+    """
+    try:
+        _, hard = resource.getrlimit(which)
+    except (ValueError, OSError) as exc:
+        raise DriverError(f"cannot read rlimit {label}: {exc}") from exc
+    if hard != resource.RLIM_INFINITY and res_value > hard:
+        raise DriverError(
+            f"requested {label}={res_value} exceeds the hard cap {hard}"
+        )
+
+
+def _apply_rlimits(limits: _LimitPlan):
+    """preexec_fn body: apply the platform-resolved rlimit plan before exec.
 
     Runs in the forked child between fork and exec (single-threaded there),
-    which is the only correct place to apply per-process limits.
+    which is the only correct place to apply per-process limits. The plan
+    itself is resolved in the parent (`create`) — nothing here reads the
+    environment or probes the system (async-signal-safety, ADR-0007 D3).
+
+    Async-signal-safety: this body MUST NOT raise. `preexec_fn` running in a
+    multithreaded parent can otherwise surface `SubprocessError: Exception
+    occurred in preexec_fn` and the sandbox never boots (Platform portability:
+    this repo runs on macOS and Linux). Feasibility is checked in the parent
+    (`_check_limit_feasible`) before spawn, so a normal mismatch fails there
+    rather than here; a *write* failure here (e.g. an unexpected EPERM) is
+    swallowed so the child still execs. `resource.setrlimit` is a libc call
+    that does not allocate, so it is safe to call verbatim.
     """
 
     def set_limit(which: int, soft: int, hard: int) -> None:
         try:
             resource.setrlimit(which, (soft, hard))
-        except (ValueError, OSError) as exc:  # e.g. above the kernel hard cap
-            raise DriverError(f"cannot apply rlimit {which}: {exc}") from exc
+        except (ValueError, OSError):
+            # Preexec must stay noexcept; a failed rlimit write must not kill
+            # the launch. Feasibility was already validated pre-fork.
+            return
 
-    if res.mem_limit_mb is not None:
-        as_bytes = res.mem_limit_mb * 1024 * 1024
-        set_limit(resource.RLIMIT_AS, as_bytes, as_bytes)
-    if res.cpu_seconds is not None:
-        # soft triggers SIGXCPU, hard kills — equal means no grace period
-        set_limit(resource.RLIMIT_CPU, res.cpu_seconds, res.cpu_seconds)
-    if res.pids_max is not None:
-        set_limit(resource.RLIMIT_NPROC, res.pids_max, res.pids_max)
+    for which, soft, hard, _label in limits:
+        set_limit(which, soft, hard)
 
 
 def _signal_group(instance: Instance, sig: signal.Signals) -> None:

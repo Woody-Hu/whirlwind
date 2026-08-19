@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
 from whirlwind.core import SnapshotKind
+from whirlwind.core.platform import current_facts
 from whirlwind.drivers import (
     Density,
     DriverError,
@@ -37,39 +39,41 @@ RUNSC_REQUIRED = pytest.mark.skipif(
     not (HAS_RUNSC and HAS_BUSYBOX), reason="runsc binary or static busybox not installed"
 )
 
-CAP_SYS_ADMIN = 21
-
-
-def _have_cap(cap_bit: int) -> bool:
-    try:
-        status = Path("/proc/self/status").read_text()
-        cap_eff = int(
-            next(l.split()[1] for l in status.splitlines() if l.startswith("CapEff")), 16
-        )
-        return bool(cap_eff & (1 << cap_bit))
-    except (StopIteration, ValueError, OSError):
-        return False
-
-
 # restricted container: rootless containerd/docker drops CAP_SYS_ADMIN, so
 # runsc must run rootless, skip cgroups, and use non-sandbox networking.
-IS_RESTRICTED = os.geteuid() != 0 or not _have_cap(CAP_SYS_ADMIN)
+# Linux-container semantics via the shared platform facts (ADR-0007 D4).
+IS_RESTRICTED = current_facts().restricted
 
 
 def _busybox() -> Path:
     return Path(shutil.which("busybox") or "/usr/bin/busybox")
 
 
+def _payload() -> Path:
+    """The payload file dropped into the OCI bundle.
+
+    OCI-bundle rendering only needs the bundle to contain a real, executable
+    file for the launcher to reference — it never executes inside a sandbox.
+    Use static busybox when present (realistic gVisor init), else fall back to
+    the current interpreter so the pure render/logic tests stay platform-portable
+    (macOS has no busybox). Real guest execution stays behind @RUNSC_REQUIRED.
+    """
+    if HAS_BUSYBOX:
+        return _busybox()
+    return Path(sys.executable)
+
+
 def _spec(tmp_path: Path, sandbox_id: str, argv: list[str] | None = None) -> SandboxSpec:
-    """A real bundle: static busybox copied in as the sandbox payload."""
+    """A real bundle: a real payload file copied in as the sandbox launcher."""
     bundle = tmp_path / "bundle"
-    bb = bundle / "bin" / "busybox"
-    bb.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(_busybox(), bb)
-    bb.chmod(0o755)
+    payload = _payload()
+    target = bundle / "bin" / payload.name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(payload, target)
+    target.chmod(0o755)
     return SandboxSpec(
         sandbox_id=sandbox_id,
-        argv=argv or [str(bb), "sh", "-c", "sleep 300"],
+        argv=argv or [str(target), "sh", "-c", "sleep 300"],
         bundle_root=bundle,
         workspace=tmp_path / "sandboxes" / sandbox_id,
         env={"PATH": "/bin"},
@@ -106,7 +110,8 @@ def test_render_oci_config_maps_paths_into_rootfs(tmp_path: Path) -> None:
 
     assert config["ociVersion"] == "1.0.2"
     # argv translated from host-absolute to rootfs-relative
-    assert config["process"]["args"] == ["/bin/busybox", "sh", "-c", "sleep 300"]
+    payload_name = _payload().name
+    assert config["process"]["args"] == [f"/bin/{payload_name}", "sh", "-c", "sleep 300"]
     # workspace bind-mounted at the process cwd
     assert config["process"]["cwd"] == "/workspace"
     bind_sources = {m["source"] for m in config["mounts"] if m.get("type") == "bind"}
@@ -147,7 +152,9 @@ def test_render_oci_config_threads_resources(tmp_path: Path) -> None:
 
 
 async def test_missing_binary_reports_driver_error(tmp_path: Path) -> None:
-    driver = RunscDriver(runsc_bin="definitely-not-runsc")
+    # a writable state_root from the caller (the /run default is a Linux
+    # deployment default; create() mkdirs state_root before probing runsc)
+    driver = RunscDriver(runsc_bin="definitely-not-runsc", state_root=tmp_path / "state")
     spec = _spec(tmp_path, "sbx_missing")
     with pytest.raises(DriverError):
         await driver.create(spec)

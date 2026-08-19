@@ -14,3 +14,6 @@ images/
 !tests/**/*.jsonl
 refs/
 .pnpm-store/
+
+# test-runner logs (ADR-0008, disposable dev artifacts)
+.test-logs/
