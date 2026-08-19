@@ -19,10 +19,10 @@ Replaces hand-rolled cron/YAML with mature libraries and lands the first real da
 
 - [x] P0.1 `timer/cron.py`: delegate to `croniter` (5-field contract, strictness and `?` alias preserved; month/dow English names accepted as a compatible extension) — ADR-0003 D1
 - [x] P0.2 `harness/adapter.py`: render `cordis.yml` with `PyYAML` (`safe_dump`, deterministic key order) — ADR-0003 D2
-- [ ] P0.3 `storage/postgres.py`: `PostgresMetadataStore` (asyncpg pool + JSONB docs + typed key columns; semantics parity pinned by a shared contract suite; restart-survival test) — ADR-0004 D1
-- [ ] P0.4 `storage/redis.py`: `RedisKVStore` (Lua CAS) + `RedisLocks` (token-checked release); cross-instance CAS test against real Redis — ADR-0004 D2
-- [ ] P0.5 Runtime backend selection: `RuntimeConfig.metadata_backend/kv_backend` + `whirlwind serve` flags; extras `whirlwind[postgres]` / `whirlwind[redis]` — ADR-0004 D3
-- [ ] P0.6 Storage benchmarks: memory vs PostgreSQL vs Redis (real services, no fabricated numbers) — ADR-0004 §7
+- [x] P0.3 `storage/postgres.py`: `PostgresMetadataStore` (asyncpg pool + JSONB docs + typed key columns; semantics parity pinned by a shared contract suite; restart-survival test) — ADR-0004 D1/D2
+- [x] P0.4 `storage/redis.py`: `RedisKVStore` (Lua CAS) + `RedisLocks` (token-checked release); cross-instance CAS test against real Redis — ADR-0004 D3
+- [x] P0.5 Runtime backend selection: `RuntimeConfig.metadata_backend/kv_backend` + `whirlwind serve` flags; extras `whirlwind[postgres]` / `whirlwind[redis]` — ADR-0004 D4/D5
+- [x] P0.6 Storage benchmarks: memory vs PostgreSQL vs Redis (real services, no fabricated numbers) — ADR-0004 D6 + measured baselines
 
 ## P1 — Edge hardening / 边缘加固（下一轮）
 

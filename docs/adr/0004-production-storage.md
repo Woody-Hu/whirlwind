@@ -190,9 +190,9 @@ Same policy as runsc/vsock (ADR-0002): **no fakes**. Integration tests probe a r
 
 ## D6 基准
 
-pytest-benchmark against real localhost services, memory vs PG vs Redis: agent create+get roundtrip, session update, KV put/get, CAS. Numbers are recorded from real runs in §8 and serve as regression baselines; no fabricated thresholds — acceptance is "same order of magnitude as the first recorded baseline on the same host class" until a production host defines harder lines.
+pytest-benchmark against real localhost services, memory vs PG vs Redis: agent create+get roundtrip, session update, KV put/get, CAS. Numbers are recorded from real runs in the "Measured baselines" section below and serve as regression baselines; no fabricated thresholds — acceptance is "same order of magnitude as the first recorded baseline on the same host class" until a production host defines harder lines.
 
-用真实本机服务跑 pytest-benchmark，memory 对 PG 对 Redis：agent create+get 往返、session update、KV put/get、CAS。数字来自真实运行并记录于 §8，作为回归基线；不设编造阈值——验收标准是「同级别主机上与首次记录基线同数量级」，直到生产主机给出更硬的线。
+用真实本机服务跑 pytest-benchmark，memory 对 PG 对 Redis：agent create+get 往返、session update、KV put/get、CAS。数字来自真实运行并记录于下文「实测基线」一节，作为回归基线；不设编造阈值——验收标准是「同级别主机上与首次记录基线同数量级」，直到生产主机给出更硬的线。
 
 ## D7 Destructiveness & cohesion assessment
 
@@ -219,3 +219,22 @@ pytest-benchmark against real localhost services, memory vs PG vs Redis: agent c
 - EventLog → PG、EventBus → NATS（ADR-0002 预留位；TODO P3.2）
 - 多节点 hostlet 注册发现（TODO P3.1）
 - 连接池只取合理默认，不做调优、只读副本、迁移框架（当前幂等 DDL；首个破坏性变更到来时再引入版本化迁移）
+
+---
+
+## Measured baselines (2026-08-19) / 实测基线（2026-08-19）
+
+Real run on the dev sandbox (Linux, CPython 3.14, PostgreSQL + Redis on 127.0.0.1, `pytest tests/benchmark/test_storage_bench.py --benchmark-autosave`); medians of the second run, raw JSON under `.benchmarks/`. These are the first recorded baselines — regression acceptance is "same order of magnitude on the same host class" (D6).
+
+开发沙箱真实运行（Linux、CPython 3.14、PostgreSQL + Redis 均在 127.0.0.1，`pytest tests/benchmark/test_storage_bench.py --benchmark-autosave`）；取第二次运行的中位数，原始 JSON 存于 `.benchmarks/`。这是首批记录基线——回归验收标准为「同级别主机同数量级」（D6）。
+
+| Operation / 操作 | memory (µs) | PostgreSQL (µs) | Redis (µs) |
+|---|---:|---:|---:|
+| agent create+get roundtrip / agent 创建+读取往返 | 18.3 | 776.5 | — |
+| session update / 会话状态更新 | 8.7 | 571.1 | — |
+| KV put+get | 17.1 | — | 209.9 |
+| KV CAS | 8.8 | — | 107.6 |
+
+Reading / 解读: the in-process providers are one to two orders of magnitude faster — exactly the price of durability/multi-process semantics, and the reason the default stays memory while production selects PG/Redis (D4). All paths sit far below per-turn needs (a real turn is I/O-bound on the sandbox and LLM relay, milliseconds to seconds).
+
+进程内 provider 快一到两个数量级——这正是持久化/多进程语义的代价，也是默认值保持 memory、生产形态再选 PG/Redis 的原因（D4）。所有路径都远低于单 turn 的实际需求（真实 turn 的瓶颈在沙箱与 LLM 中继的 I/O，毫秒到秒级）。
