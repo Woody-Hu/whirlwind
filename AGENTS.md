@@ -45,8 +45,10 @@ Gateway (REST + SSE + MCP)          接入层：会话 / 事件流 / cron / 镜�
 ```
 whirlwind/
 ├── AGENTS.md                        # 本文档：工程协作规范
-├── README.md                        # 项目简介 / 快速上手（中英双语）
-├── agent-runtime-architecture.md    # 架构设计 v0.6（中英双语，事实源）
+├── README.md                        # 项目简介 / 快速上手（英文版，zh-CN 版互链，见 §5.5）
+├── README.zh-CN.md                  # 项目简介 / 快速上手（中文版）
+├── agent-runtime-architecture.md    # 架构设计 v0.6（英文版，事实源）
+├── agent-runtime-architecture.zh-CN.md  # 架构设计 v0.6（中文版，与英文版互链）
 ├── pyproject.toml                   # 项目元数据；pytest 配置；extras: [postgres] [redis]
 ├── docs/
 │   ├── adr/                         # 架构决策记录（开发前必读/必写，见 §5）
@@ -272,6 +274,16 @@ ADR 需覆盖的设计维度（按需取舍，至少明确其一）：
 ### 5.4 TODO.md 活文档
 
 每个自闭环变更合入时同步更新 [docs/TODO.md](docs/TODO.md)：勾选项用 `[x]`/`[~]`/`[ ]`/`(!)` 图例，并在 Done 区追加一行带月份与 ADR 指针的记录。
+
+### 5.5 双语文档规范（顶层文档拆分）
+
+顶层文档（README、架构设计文档）**不采用中英混排**，而是拆为独立的两份并互链切换：
+
+- **命名**：英文版用原名（`README.md` / `agent-runtime-architecture.md`），中文版加 `.zh-CN.md` 后缀（`README.zh-CN.md` / `agent-runtime-architecture.zh-CN.md`）；
+- **互链**：两份文档顶部第一行放语言切换链接（`**English** | [中文](xxx.zh-CN.md)`），当前语言加粗、另一语言为链接；
+- **内容对齐**：两份文档是同一内容的两种语言，结构（章节、表格、图、代码块）必须一一对应；更新时同步更新两份，不允许只改一份；
+- **共享元素**：表格、代码块、mermaid 图、图片等构件两份共用同一内容（图内标签/代码注释保持原样即可）；
+- **ADR 与 session-log 不拆分**：`docs/adr/` 与 `docs/session-logs/` 保持既有「中英对照段落」风格（历史记录只增不删），只有面向外部读者的顶层文档走拆分形态。
 
 ---
 

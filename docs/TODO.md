@@ -81,3 +81,4 @@ ADR-0002 已预留 provider 位；P0 先落地单节点 PostgreSQL/Redis。多�
 - 2026-08 P0: mature-library foundations + PostgreSQL/Redis storage providers (ADR-0003, ADR-0004)
 - 2026-08 P1 (auth excluded): sandbox resource limits, live-session quota, idempotency keys, k3s deployment form with measured gate costs (ADR-0005)
 - 2026-08 EngEx: platform abstraction — one `PlatformFacts` object + `@platform_impl` behaviour plugins + `WHIRLWIND_PLATFORM` identity simulation (ADR-0007); test runner with full output to `.test-logs/` and terse console verdict (ADR-0008); AGENTS.md gains §3.3 platform rule and §4.5 test-logging spec
+- 2026-08 Docs: top-level bilingual docs split into separate EN / zh-CN files with language-switch links (README + architecture doc); convention codified as AGENTS.md §5.5 (see session-log 2026-08-20-doc-split.md)
