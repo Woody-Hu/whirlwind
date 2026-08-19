@@ -118,6 +118,26 @@ Artifacts live in `deploy/k3s/` (image build script, manifest, smoke script); th
 
 产物放在 `deploy/k3s/`（镜像构建脚本、清单、冒烟脚本）；冒烟脚本驱动与集成套件相同的 REST 面——构建 echo 镜像、创建 agent、跑完一个 turn。
 
+**Measured reality on the dev sandbox** (2026-08-19): the sandbox container has no `CAP_SYS_ADMIN`, a read-only cgroup2 mount and read-only `/proc/sys`, so kubelet/containerd cannot run and full agent mode is impossible — this is a container limit, not a k3s defect. What shipped instead, all verified for real:
+
+**开发沙箱上的实测结论**（2026-08-19）：沙箱容器无 `CAP_SYS_ADMIN`、cgroup2 只读挂载、`/proc/sys` 只读，kubelet/containerd 无法运行，完整 agent 模式不可行——这是容器限制，不是 k3s 缺陷。实际交付并真实验证的是：
+
+- `k3s server --disable-agent` (v1.36.3+k3s1, `--egress-selector-mode=disabled`): a real control plane — kube-apiserver + controller-manager + scheduler over sqlite. `deploy/k3s/dev-server.sh` boots it.
+- A fake node kept Ready the KWOK way: a 10s loop renewing the `kube-node-lease` Lease + patching the node's Ready condition; without it the node-lifecycle-controller taints the node `unreachable` within ~40s and scheduling dies.
+- A pre-bound static PV (`local-path` StorageClass label + `claimRef`) standing in for the disabled local-path provisioner, so the PVC binds.
+- `deploy/k3s/manifest.yaml` applied for real: Deployment→ReplicaSet→Pod chain created, pod scheduled onto the node (`Successfully assigned`), PVC `Bound`, NodePort 30841 allocated. Pods stop at ContainerCreating until a node with a kubelet joins — the honest limit of a kubelet-less control plane.
+- Ops knowledge recorded for this mode: pod deletion needs `--force --grace-period=0` (graceful deletion waits for a kubelet that will never ack), and a Retain PV's `claimRef` must be cleared before a recreated PVC can rebind.
+
+- `k3s server --disable-agent`（v1.36.3+k3s1，`--egress-selector-mode=disabled`）：真实控制面——kube-apiserver + controller-manager + scheduler 跑在 sqlite 上。由 `deploy/k3s/dev-server.sh` 拉起。
+- 以 KWOK 的方式保活的假节点：10 秒循环 renew `kube-node-lease` 的 Lease + patch 节点 Ready condition；没有它，node-lifecycle-controller 会在 ~40 秒内给节点打 `unreachable` 污点，调度即死。
+- 预绑定的静态 PV（`local-path` StorageClass 标签 + `claimRef`）顶替被禁用的 local-path provisioner，使 PVC 可绑定。
+- `deploy/k3s/manifest.yaml` 真实 apply：Deployment→ReplicaSet→Pod 链路创建、Pod 调度到节点（`Successfully assigned`）、PVC `Bound`、NodePort 30841 分配。Pod 停在 ContainerCreating 直到有真实 kubelet 的节点加入——这是无 kubelet 控制面的诚实极限。
+- 该模式下的运维知识已记录：Pod 删除需 `--force --grace-period=0`（优雅删除在等一个永远不会应答的 kubelet）；Retain PV 的 `claimRef` 须清除后重建的 PVC 才能重新绑定。
+
+`deploy/k3s/smoke.sh` is rerunnable (409 on image rebuild tolerated, unique agent names): healthz → build echo image → create agent → open session → turn to `turn/end`. Verified against a live gateway process; on a k3s with real nodes it targets the NodePort unchanged.
+
+`deploy/k3s/smoke.sh` 可重入（镜像重建容忍 409、agent 名唯一）：healthz → 构建 echo 镜像 → 创建 agent → 开会话 → 跑 turn 到 `turn/end`。已对真实网关进程验证；在有真实节点的 k3s 上原样指向 NodePort 即可。
+
 ## D5 Testing — real enforcement, no fakes
 
 ## D5 测试——真实执行，不用替身
@@ -130,8 +150,8 @@ Artifacts live in `deploy/k3s/` (image build script, manifest, smoke script); th
   **配额**：上限 2 → 第三个创建得到 `whirlwind/quota-exceeded`（HTTP 429）；关闭会话释放容量。
 - **Idempotency**: unit level via ASGI transport against a scratch app (replay identity, 409 in-flight, 422 body mismatch, 5xx key release, TTL expiry); integration level against the real gateway (same key twice → same session id, exactly one session created).
   **幂等**：单元层用 ASGI transport 对临时应用（重放一致性、409 in-flight、422 体重不符、5xx 释放键、TTL 过期）；集成层对真实网关（同键两次 → 同 session id，恰好创建一个会话）。
-- **k3s**: the smoke script is the test — it fails loudly if the turn never completes; no mocked Kubernetes.
-  **k3s**：冒烟脚本即测试——turn 未完成即大声失败；不 mock Kubernetes。
+- **k3s**: manifest asserted field-by-field in `tests/integration/test_k3s_manifest.py` (probes, resources, env wiring, volumes, NodePort — runs everywhere); when a control plane is reachable the same manifest is applied for real and the controller chain verified (Deployment→RS→Pod, scheduling, PVC binding, NodePort). The smoke script is the live test — it fails loudly if the turn never completes; no mocked Kubernetes.
+  **k3s**：`tests/integration/test_k3s_manifest.py` 逐字段断言清单（探针、资源、env 接线、卷、NodePort——处处可跑）；控制面可达时同一份清单被真实 apply 并验证控制器链路（Deployment→RS→Pod、调度、PVC 绑定、NodePort）。冒烟脚本即活体测试——turn 未完成即大声失败；不 mock Kubernetes。
 
 ## D6 Destructiveness & cohesion assessment
 
