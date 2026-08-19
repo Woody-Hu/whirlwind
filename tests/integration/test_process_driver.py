@@ -33,6 +33,13 @@ SRC = str(Path(__file__).resolve().parents[2] / "src")
 ECHO_ARGV = [sys.executable, "-m", "whirlwind.harness.echo_server"]
 BASE_ENV = {"PYTHONPATH": SRC, "PYTHONUNBUFFERED": "1"}
 
+# RLIMIT_AS (virtual-memory ceiling) is a Linux enforcement path. On macOS the
+# soft=hard form of setrlimit(RLIMIT_AS, x) raises "current limit exceeds
+# maximum limit", so memory ceilings via RLIMIT_AS are unsupported there and are
+# honestly reported as not-as-strong (green/truthful: never claim stronger than
+# declared). RLIMIT_NPROC / RLIMIT_CPU DO work on macOS.
+RLIMIT_AS_SUPPORTED = sys.platform != "darwin"
+
 
 def _spec(tmp_path: Path, sandbox_id: str, argv: list[str], env: dict | None = None) -> object:
     from whirlwind.drivers import SandboxSpec
@@ -117,6 +124,11 @@ def _limits_spec(tmp_path: Path, sandbox_id: str, argv: list[str], resources: "R
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not RLIMIT_AS_SUPPORTED,
+    reason="RLIMIT_AS (VA ceiling) cannot be enforced as soft=hard on macOS; "
+    "code path is Linux-only (honest: never claim stronger than declared)",
+)
 async def test_resources_mem_limit_kills_allocation(tmp_path: Path) -> None:
     """A sandbox that allocates past its RLIMIT_AS dies of MemoryError —
     real kernel enforcement, not a declared number."""
@@ -156,9 +168,21 @@ async def test_resources_cpu_seconds_kills_busy_loop(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_resources_rlimits_visible_in_proc(tmp_path: Path) -> None:
-    """/proc/self/limits inside the sandbox shows exactly what was applied."""
+    """The applied rlimits are visible inside the sandbox.
+
+    RLIMIT_NPROC / RLIMIT_CPU are enforced on both macOS and Linux (asserted
+    here); the RLIMIT_AS (VA ceiling) assertion is Linux-only for the memory
+    path (see RLIMIT_AS_SUPPORTED). Verified via resource.getrlimit which is
+    portable — /proc/self/limits is Linux-only."""
     driver = ProcessDriver()
-    argv = [sys.executable, "-c", "print(open('/proc/self/limits').read())"]
+    # print the RLIMIT_AS / RLIMIT_NPROC soft limits as JSON for portability
+    argv = [
+        sys.executable,
+        "-c",
+        "import resource, json; "
+        "print(json.dumps({'as': resource.getrlimit(resource.RLIMIT_AS), "
+        "'nproc': resource.getrlimit(resource.RLIMIT_NPROC)}))",
+    ]
     spec = _limits_spec(
         tmp_path, "sb-limits", argv, Resources(mem_limit_mb=256, pids_max=256)
     )
@@ -166,8 +190,14 @@ async def test_resources_rlimits_visible_in_proc(tmp_path: Path) -> None:
     try:
         assert instance.process is not None and instance.process.stdout is not None
         out = (await asyncio.wait_for(instance.process.stdout.read(), timeout=30)).decode()
-        assert "268435456" in out  # 256MB in Max address space
-        assert "256" in out  # pids_max in Max processes
+        import json as _json
+
+        limits = _json.loads(out.strip())
+        if RLIMIT_AS_SUPPORTED:
+            # 256MB in bytes = 268435456 (soft, hard may be capped by the host)
+            assert limits["as"][0] == 268435456
+        # RLIMIT_NPROC ceiling is enforced on both platforms
+        assert limits["nproc"][0] == 256
     finally:
         await driver.destroy("sb-limits")
 
@@ -179,12 +209,17 @@ async def test_resources_none_mean_no_limits(tmp_path: Path) -> None:
     spec = _limits_spec(tmp_path, "sb-nolimit", ["/bin/sleep", "30"], Resources())
     instance = await driver.create(spec)
     try:
-        argv = [sys.executable, "-c", "print(open('/proc/self/limits').read())"]
+        argv = [
+            sys.executable,
+            "-c",
+            "import resource; "
+            "print(resource.getrlimit(resource.RLIMIT_AS)[0] == resource.RLIM_INFINITY)",
+        ]
         result = await driver.exec(
             "sb-nolimit", ExecSpec(argv=argv, env_extra=BASE_ENV)
         )
         assert result.exit_code == 0
-        assert "unlimited" in result.stdout  # address space stays unlimited
+        assert "True" in result.stdout.strip()  # address space stays unlimited
     finally:
         await driver.destroy("sb-nolimit")
 

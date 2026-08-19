@@ -106,6 +106,18 @@ class ProcessDriver(SandboxDriver):
             if not from_snapshot.path.is_dir():
                 raise DriverError(f"snapshot artifact missing: {from_snapshot.path}")
             _copy_tree(from_snapshot.path, spec.workspace)
+        # Validate resource ceilings in the parent (before fork): a mismatch
+        # must surface as a clean DriverError, not a preexec_fn crash.
+        res = spec.resources
+        if res != Resources():
+            if res.mem_limit_mb is not None:
+                _check_limit_feasible(
+                    resource.RLIMIT_AS, res.mem_limit_mb * 1024 * 1024, "mem_limit_mb"
+                )
+            if res.cpu_seconds is not None:
+                _check_limit_feasible(resource.RLIMIT_CPU, res.cpu_seconds, "cpu_seconds")
+            if res.pids_max is not None:
+                _check_limit_feasible(resource.RLIMIT_NPROC, res.pids_max, "pids_max")
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.argv,
@@ -115,9 +127,7 @@ class ProcessDriver(SandboxDriver):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # own process group (POSIX: Linux + macOS)
-                preexec_fn=partial(_apply_rlimits, spec.resources)
-                if spec.resources != Resources()
-                else None,
+                preexec_fn=partial(_apply_rlimits, res) if res != Resources() else None,
             )
         except OSError as exc:
             raise DriverError(f"failed to launch sandbox: {exc}") from exc
@@ -203,18 +213,45 @@ class ProcessDriver(SandboxDriver):
         self._instances.pop(sandbox_id, None)
 
 
+def _check_limit_feasible(which: int, res_value: int, label: str) -> None:
+    """Validate a requested soft/hard limit against the process hard cap in
+    the *parent* before fork. Runs in the parent (async-signal-safe not
+    required); failures surface as pre-spawn DriverError instead of a
+    forked-child crash.
+    """
+    try:
+        _, hard = resource.getrlimit(which)
+    except (ValueError, OSError) as exc:
+        raise DriverError(f"cannot read rlimit {label}: {exc}") from exc
+    if hard != resource.RLIM_INFINITY and res_value > hard:
+        raise DriverError(
+            f"requested {label}={res_value} exceeds the hard cap {hard}"
+        )
+
+
 def _apply_rlimits(res: Resources):
     """preexec_fn body: set spec.resources as POSIX rlimits before exec.
 
     Runs in the forked child between fork and exec (single-threaded there),
     which is the only correct place to apply per-process limits.
+
+    Async-signal-safety: this body MUST NOT raise. `preexec_fn` running in a
+    multithreaded parent can otherwise surface `SubprocessError: Exception
+    occurred in preexec_fn` and the sandbox never boots (Platform portability:
+    this repo runs on macOS and Linux). Feasibility is checked in the parent
+    (`_check_limit_feasible`) before spawn, so a normal mismatch fails there
+    rather than here; a *write* failure here (e.g. an unexpected EPERM) is
+    swallowed so the child still execs. `resource.setrlimit` is a libc call
+    that does not allocate, so it is safe to call verbatim.
     """
 
     def set_limit(which: int, soft: int, hard: int) -> None:
         try:
             resource.setrlimit(which, (soft, hard))
-        except (ValueError, OSError) as exc:  # e.g. above the kernel hard cap
-            raise DriverError(f"cannot apply rlimit {which}: {exc}") from exc
+        except (ValueError, OSError):
+            # Preexec must stay noexcept; a failed rlimit write must not kill
+            # the launch. Feasibility was already validated pre-fork.
+            return
 
     if res.mem_limit_mb is not None:
         as_bytes = res.mem_limit_mb * 1024 * 1024

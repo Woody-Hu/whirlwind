@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,19 @@ import whirlwind.agent.server as agent
 from whirlwind.transport import connect, parse_url, serve, vsock_available
 
 VSOCK_PRESENT = vsock_available()
+
+
+def _uds_path(name: str) -> Path:
+    """Return a Unix-socket path short enough for AF_UNIX on macOS.
+
+    macOS caps AF_UNIX paths at 104 bytes; pytest's real tmp dir lives under
+    /var/folders/... and can already be ~60 bytes, so appending a socket name
+    blows past the cap. Put sockets in a short dedicated dir under $TMPDIR.
+    """
+    base = Path(os.environ.get("TMPDIR", "/tmp"))
+    short = base / "whirlwind-uds"
+    short.mkdir(parents=True, exist_ok=True)
+    return short / name
 
 
 async def _read_head(
@@ -75,15 +89,14 @@ async def test_tcp_roundtrip_via_transport() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unix_roundtrip_via_transport(tmp_path: Path) -> None:
-    sock = tmp_path / "hostlet.sock"
+async def test_unix_roundtrip_via_transport() -> None:
+    sock = _uds_path("hostlet.sock")
     await _roundtrip(f"unix://{sock}", f"http+unix://{sock}")
 
 
-@pytest.mark.asyncio
-async def test_agent_client_posts_events_over_uds(tmp_path: Path) -> None:
+async def test_agent_client_posts_events_over_uds() -> None:
     """The SandboxAgent's real ingest client (stdlib HTTP) over a UDS hostlet."""
-    sock = tmp_path / "hostlet.sock"
+    sock = _uds_path("hostlet.sock")
     got: dict = {}
 
     async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -108,9 +121,9 @@ async def test_agent_client_posts_events_over_uds(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_server_serves_over_uds(tmp_path: Path) -> None:
+async def test_agent_server_serves_over_uds() -> None:
     """The SandboxAgent's real stdlib HTTP server on a UDS listener."""
-    sock = tmp_path / "agent.sock"
+    sock = _uds_path("agent.sock")
     server = await serve(f"unix://{sock}", agent._handle_connection)
     try:
         reader, writer = await connect(parse_url(f"http+unix://{sock}")[0])

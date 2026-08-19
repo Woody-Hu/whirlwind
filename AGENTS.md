@@ -1,0 +1,293 @@
+# AGENTS.md — Whirlwind Agent Runtime 工程协作指南
+
+> 本文档面向在本仓库工作的 AI coding agent 与人类工程师，约定架构认知、目录索引、开发/测试/文档规范与长上下文协作（handoff）方式。
+> 事实性架构描述以 [agent-runtime-architecture.md](agent-runtime-architecture.md)（v0.6 架构草案）与 [docs/adr/](docs/adr/) 为准；本文档是操作层规范，冲突时以 ADR 为最高事实源。
+
+---
+
+## 1. 项目定位与整体架构
+
+### 1.1 解决的问题
+
+Whirlwind 是一个 **harness 无感的沙箱化智能体运行时**。agent 类负载有三个先天特征，决定了本系统的形态：
+
+1. **负载高度突发**——绝大多数时间在等待输入或工具结果，真正执行时间占比极低；
+2. **执行体不可信**——agent 运行模型生成的代码，必须隔离在沙箱中，导致单租户、海量实例；
+3. **harness 生态碎片化**——各框架的循环、工具、会话模型互不兼容，绑定任何一家 API 都会被锁死。
+
+**立足点：平台只与「沙箱 + 事件 + 能力契约」打交道，永远不与具体 harness 的内部 API 打交道。** 任意 harness（DeepSeek Harness / dsh、echo、自研 loop）作为黑盒进程装进受管沙箱，平台统一负责会话路由、沙箱调度、快照恢复、池化预热、事件流与能力注入。
+
+### 1.2 五层架构
+
+```
+Gateway (REST + SSE + MCP)          接入层：会话 / 事件流 / cron / 镜像管理
+  └─ Control (SessionManager / Scheduler / WarmPool / Lifecycle)   控制面
+       └─ Hostlet (ensure / bind / turn / pause / destroy + SecretRelay)   节点代理
+            └─ SandboxDriver ──→ 沙箱（gVisor / 进程组）
+                 └─ SandboxAgent (EventTap / ControlAgent / ResourceInjector / LLM Relay)
+                      └─ Harness (dsh / echo / ...)
+```
+
+- 上层只认 `AgentSession`（全系统唯一调度单元），下层只认 `Sandbox`（物理执行单元），两者由控制面经 KV 路由表动态绑定翻译。
+- 沙箱**无入站请求面**；出站（LLM 调用等）统一经 Hostlet 的 SecretRelay 代理，**密钥永不进沙箱**（沙箱内只有占位符 `DEEPSEEK_API_KEY=whirlwind-relay`）。
+- driver 能力位（`Caps`）**如实上报**，调度只认能力位——声明即执行，不强于声明。
+
+### 1.3 演进状态
+
+- **已落地**：M1 单进程竖切（process driver、echo/dsh adapter、Seam renderer、REST+SSE+MCP、CLI）；M2 全生命周期（suspend/resume、warm 池 CAS、时间轮 cron）；M3 部分（runsc driver 真实 gVisor 全生命周期验证、TCP/UDS/vsock 传输、durable WAL EventLog）；P0（croniter/PyYAML 成熟库、PostgreSQL/Redis provider）；P1 除 auth 外（资源限制、会话配额、幂等键、k3s 部署）。
+- **已定稿待实施**：microsandbox（libkrun/krunkit）第三 VM 底座（[ADR-0006](docs/adr/0006-microsandbox-driver.md)，`Isolation.LIGHT_VM`）——填补 Apple Silicon 的 VM 级测试覆盖空洞。
+- **进行中/待办**：见 [docs/TODO.md](docs/TODO.md)（活文档，随每个自闭环变更增量维护）。
+
+---
+
+## 2. 目录索引
+
+```
+whirlwind/
+├── AGENTS.md                        # 本文档：工程协作规范
+├── README.md                        # 项目简介 / 快速上手（中英双语）
+├── agent-runtime-architecture.md    # 架构设计 v0.6（中英双语，事实源）
+├── pyproject.toml                   # 项目元数据；pytest 配置；extras: [postgres] [redis]
+├── docs/
+│   ├── adr/                         # 架构决策记录（开发前必读/必写，见 §5）
+│   │   ├── 0001-agent-runtime-m1.md     # M1/M2 竖切详设：D1~D10（语言/process driver/dsh 协议/Sidecar/Seam/镜像库/MCP/CLI/时间轮/provider）
+│   │   ├── 0002-m3-substrates.md        # M3 底座：runsc driver、vsock 传输、durable WAL EventLog
+│   │   ├── 0003-mature-libs.md          # cron→croniter、YAML→PyYAML 成熟库替换
+│   │   ├── 0004-production-storage.md   # PostgreSQL MetadataStore、Redis KV/Locks、后端选择
+│   │   └── 0005-edge-hardening.md       # 沙箱资源限制、会话配额、幂等键、k3s 部署
+│   ├── TODO.md                      # 演进路线活文档（P0~P4 优先级分层）
+│   ├── session-logs/                # 开发 session 记录（见 §5.3，按日期归档）
+│   └── memory/                      # 项目记忆（见 §6，长上下文 handoff 载体）
+├── src/whirlwind/
+│   ├── core/                        # 领域层：模型 / 状态机 / 事件 / 错误 / id
+│   │   ├── model.py                     # AgentDefinition / AgentVersion / AgentSession / Sandbox / Snapshot / CronJob（pydantic）
+│   │   ├── statemachine.py              # SESSION/SANDBOX 转移表 + check_transition
+│   │   ├── events.py                    # SessionEvent / Surface
+│   │   └── errors.py                    # WhirlwindError 基类（code 字段约定）
+│   ├── storage/                     # 存储层：接口与实现分离（开闭原则样板）
+│   │   ├── providers.py                 # 六大 Protocol：MetadataStore / KVStore / LockProvider / ObjectStore / EventLog / EventBus
+│   │   ├── memory.py / local.py         # 进程内 / 目录实现（默认后端）
+│   │   ├── wal_eventlog.py              # durable WAL：fsync 落盘 + 组提交 + 崩溃恢复
+│   │   ├── postgres.py / redis.py       # 生产后端（asyncpg / redis，语义对齐共享契约测试）
+│   │   └── skills.py                    # skill 归档存储
+│   ├── drivers/                     # 沙箱底座：单接口多实现
+│   │   ├── base.py                      # SandboxDriver Protocol + Caps / SandboxSpec / Resources / Instance
+│   │   ├── process.py                   # 进程组 driver（macOS/Linux，M1 默认）
+│   │   ├── runsc.py                     # gVisor driver（Linux，FULL 快照/checkpoint）
+│   │   └── microsandbox.py              # libkrun/krunkit driver（LIGHT_VM，mac 本地 VM 底座；ADR-0006，定稿待实施）
+│   ├── transport/                   # 传输抽象：endpoints.py 解析 + transports.py connect/serve（tcp/unix/vsock）
+│   ├── hostlet/                     # 节点代理：沙箱生命周期编排 + SecretRelay（凭证出网替换）
+│   ├── agent/                       # SandboxAgent：沙箱内首进程（stdlib asyncio HTTP，无重框架）
+│   ├── harness/                     # HarnessAdapter 接口 + echo 基线 + dsh adapter（stdio JSON-RPC）+ protocol.py
+│   ├── seam/                        # Seam 契约模型（SeamDefinition / ProviderSpec / SeamBinding / InjectionManifest）与 Renderer
+│   ├── imaging/                     # ImageRegistry 接口 + LocalRegistry（构建即真实安装）
+│   ├── control/                     # 控制面：manager（会话）/ scheduler（调度）/ pool（warm 池 CAS）/ lifecycle（ensure_* 幂等步骤链）
+│   ├── gateway/                     # FastAPI：REST + SSE + MCP Gateway + cron.py + idempotency.py
+│   ├── timer/                       # Kafka 式层次时间轮 wheel.py + cron.py（croniter 委托）
+│   ├── bus/                         # 进程内事件总线（主题扇出、seq 游标）
+│   ├── runtime.py                   # WhirlwindRuntime：自底向上装配 storage→hostlet→control→gateway，后端选择（metadata_backend/kv_backend）
+│   └── cli.py                       # CLI 入口（whirlwind 命令）
+├── tests/
+│   ├── unit/                        # 纯逻辑单测（statemachine / model / idempotency / seam / endpoints ...）
+│   ├── integration/                 # 真实进程/文件系统/本地 HTTP；conftest.py 提供 PG/Redis 可达性检查与多后端参数化 fixture
+│   ├── e2e/                         # WHIRLWIND_E2E=1 + 真实 DeepSeek API 才运行
+│   └── benchmark/                   # pytest-benchmark 真实测量（见 §4.3 验收基线）
+└── deploy/k3s/                      # k3s 部署形态：Dockerfile / manifest.yaml / build-image.sh / smoke.sh / dev-server.sh
+```
+
+---
+
+## 3. 开发规范（开闭原则）
+
+### 3.1 依赖方向与抽象接口
+
+**模块之间只依赖抽象（Protocol），不依赖实现。** 这是本仓库最重要的结构性约束，也是"对扩展开放、对修改关闭"的落地方式：
+
+- 新增一种**沙箱底座**（如 Firecracker microVM）＝ 在 `drivers/` 新增一个实现文件，调度器/Hostlet 零改动（`SandboxDriver` 见 [base.py](src/whirlwind/drivers/base.py)）；
+- 新增一种**存储后端**（如 NATS EventBus、对象存储）＝ 在 `storage/` 新增 provider 实现，运行时经 `RuntimeConfig` 注入（接口见 [providers.py](src/whirlwind/storage/providers.py)）；
+- 新增一种 **harness** ＝ 在 `harness/` 新增 adapter（`HarnessAdapter.prepare(manifest) -> PreparedHarness`），平台不改内核；
+- 新增一种**传输链路** ＝ 在 `transport/transports.py` 注册 connect/serve 分支；
+- 新增一种 **Seam provider** ＝ 实现 Seam 契约三元组（Definition / Provider / Consumer）。
+
+**判断标准：如果你的改动需要修改既有接口签名或调度核心才能接入新能力，说明抽象放错了位置——先修订 ADR 再动代码。**
+
+关键抽象接口速查：
+
+| 抽象 | 位置 | 形式 | 扩展方式 |
+| --- | --- | --- | --- |
+| `SandboxDriver` | `drivers/base.py` | `@runtime_checkable Protocol` | 新增驱动文件，如实声明 `Caps` |
+| `MetadataStore` / `KVStore` / `LockProvider` / `ObjectStore` / `EventLog` / `EventBus` | `storage/providers.py` | `Protocol` | 新增后端实现 + 共享契约测试 |
+| `HarnessAdapter` | `harness/adapter.py` | 接口 + echo 基线 | 新增 adapter（镜像 + 配置模板分发） |
+| Seam 契约 | `seam/model.py` | pydantic 模型 + Renderer | 新增 provider spec / binding |
+| `ImageRegistry` | `imaging/base.py` | 接口 | 新增 registry 实现 |
+| 传输 | `transport/transports.py` | `connect()/serve()` 函数分派 | 新增 scheme 分支 |
+
+### 3.2 数据模型定义规范
+
+- **领域实体**（需持久化/跨进程传输）：pydantic `BaseModel`，放 `core/model.py`，字段可序列化、带默认值与毫秒时间戳；新增实体先在这里定义，再在各 provider 接口中暴露存取方法。
+- **接口层值对象**（驱动入参/能力声明等不需要序列化的）：`@dataclass(frozen=True, slots=True)`，放对应模块（如 `drivers/base.py` 的 `Caps` / `SandboxSpec` / `Resources`）。
+- **枚举**：一律 `StrEnum`（如 `SessionStatus` / `SandboxStatus` / `SnapshotKind` / `Isolation`）。
+- **状态迁移**：会话与沙箱的状态只能沿 `core/statemachine.py` 的转移表（`SESSION_TRANSITIONS` / `SANDBOX_TRANSITIONS`）走，经 `check_transition()` 校验；不允许在业务代码里直接赋值 `status` 字段绕过状态机。
+- **错误**：继承 `WhirlwindError`，必须带稳定 `code` 字段（形如 `whirlwind/driver/not-found`），错误码是对外契约。
+- **ID 生成**：统一走 `core/ids.py`。
+- **能力诚实原则**：driver 的 `Caps` 与 `Resources` 声明必须与实际执行机制一致（声明即执行）；已知无法诚实保证的维度要么不声明，要么在 docstring 里写明 caveat（参考 `Resources` 的写法）。
+
+### 3.3 通用编码约定
+
+- Python 3.12+ / asyncio；依赖最小化（`fastapi` / `uvicorn` / `httpx` / `pydantic` / `croniter` / `pyyaml`），新增依赖必须有 ADR 论证。
+- 双平台可运行（macOS M 系列 + Linux）：`pathlib` 路径、`asyncio.subprocess`，不用 Linux-only syscall；平台差异封装在 driver/transport 层。
+- 自造轮子前先查成熟库（ADR-0003 的教训与原则）；自研组件（时间轮、WAL）需独立封装、独立测试。
+- 包管理用 `uv`（`uv sync`）；测试跑 `uv run python -m pytest ...`。
+
+---
+
+## 4. 测试规范
+
+### 4.1 组织与分层
+
+| 层 | 位置 | 对象 | 运行条件 |
+| --- | --- | --- | --- |
+| 单元 | `tests/unit/` | 纯逻辑（状态机、模型、解析） | 无条件运行 |
+| 集成 | `tests/integration/` | 真实子进程 / 文件系统 / 本地 HTTP / 真实 PG/Redis | 依赖不可达时 skip（conftest 探测），**绝不 stub** |
+| E2E | `tests/e2e/` | 真实 dsh + 真实 DeepSeek API | `WHIRLWIND_E2E=1` 且持有 API key |
+| 基准 | `tests/benchmark/` | 性能验收与调优对比 | 真实服务实测 |
+
+### 4.2 铁律：禁止 mock / 伪造 / 作弊
+
+来自 ADR-0001 §6，对本仓库具有宪法地位：
+
+1. 集成测试必须跑**真实进程、真实文件系统、真实本地 HTTP**——不允许用 mock 替代被测系统的执行面；
+2. 外部二进制/服务不可用（runsc、PostgreSQL、Redis、`/dev/vsock`）时，测试**跳过（skip）**并在 skip reason 里说明，而不是伪造一个假实现让测试变绿；
+3. 多后端实现（memory/postgres/redis）之间语义对齐由**共享契约测试套件**钉死，不是各写各的；
+4. 测试是行为验收，不是覆盖率表演。
+
+### 4.3 Benchmark：真实测量与验收基线
+
+benchmark 用 `pytest-benchmark`（`tests/benchmark/`），用于验证 ADR 验收线与调优对比（如 memory vs PostgreSQL vs Redis）。**数字必须来自真实运行，禁止写死/伪造/挑帧；调优结论要附测量方法与环境。**
+
+ADR 既定验收基线（改动波及相关路径时必须复测）：
+
+| 指标 | 基线 | 基准文件 |
+| --- | --- | --- |
+| 沙箱冷启动（process driver，含资源限制） | p50 ≤ 250ms | `test_edge_bench.py` |
+| WAL EventLog 组提交突发写入 | ≥ 5k events/s | `test_pipeline_bench.py` |
+| 事件总线扇出 | ≥ 20k events/s | `test_pipeline_bench.py` |
+| 时间轮调度 | 10k schedules | `test_wheel_bench.py` |
+| warm 池 CAS 认领 | p50 ≤ 2ms | `test_pool_bench.py` |
+| 存储后端对比 | memory/PG/Redis 实测基线 | `test_storage_bench.py` |
+
+### 4.4 常用命令
+
+```bash
+uv run python -m pytest tests -q -m "not e2e"                    # 全量（单测+集成+基准）
+uv run python -m pytest tests/unit -q                            # 仅单测（最快反馈）
+uv run python -m pytest tests/integration/test_runsc_driver.py -q  # 真实 gVisor（需 runsc）
+WHIRLWIND_E2E=1 uv run python -m pytest tests/e2e -q             # 真实 DeepSeek API
+uv run python -m pytest tests/benchmark/test_pipeline_bench.py -q  # 基准复测
+```
+
+提交前的最低门槛建议：`pytest tests -q -m "not e2e"` 全绿（被 skip 的必须能说出正当理由）。
+
+---
+
+## 5. 文档体系
+
+### 5.1 ADR 先行原则
+
+**任何非平凡变更（新接口、新数据模型、新模块、新算法、性能权衡、依赖引入、与架构文档的偏差）必须在动手写代码之前先写 ADR 或修订既有 ADR。** ADR 是事实源，代码注释回答"怎么做"，ADR 回答"为什么这么做、还考虑过什么"。
+
+ADR 需覆盖的设计维度（按需取舍，至少明确其一）：
+
+- **接口设计**：抽象接口签名、扩展点、契约语义；
+- **数据模型设计**：实体、字段、状态机迁移、序列化形态；
+- **架构设计**：模块职责、依赖方向、失败语义、部署形态；
+- **算法设计**：核心机制（如时间轮、WAL 组提交、CAS 认领）、复杂度与验收基线。
+
+### 5.2 ADR 写作规范
+
+- 位置 `docs/adr/`，命名 `NNNN-<slug>.md`，编号连续递增（下一个是 0006）。
+- 结构对齐既有 ADR（参考 [0001](docs/adr/0001-agent-runtime-m1.md)）：标题（中英）→ Status / Date / Related / Scope → 背景与目标 → **Key Decisions（编号 D1/D2/…）** → 详细设计 → 测试策略 → 与架构文档的冲突检查 → 实施顺序 → 风险与开放点。
+- 决策必须**编号**（D1/D2/…），后续变更通过在新 ADR 中引用旧编号来修订（如 `→ Delivered (M3)`、superseded by），不回写抹除历史。
+- 与架构文档（v0.6）的偏差必须显式记录并给理由（ADR-0001 D2 是范例）。
+- 正文遵循项目双语惯例：中英对照段落。
+
+### 5.3 Session-log 开发记录
+
+每个开发 session（一次自闭环变更的实现过程）在 `docs/session-logs/` 落一份记录，命名 `YYYY-MM-DD-<slug>.md`：
+
+```markdown
+# Session: <一句话目标>（YYYY-MM-DD）
+
+## 目标            # 本 session 要解决什么（对应 TODO 项 / ADR 编号）
+## 前置            # 阅读了哪些 ADR / 代码 / 上一份 session-log
+## 变更清单        # 动了哪些文件、新增了什么（与 ADR 决策编号对应）
+## 关键决策与发现  # 实现中的取舍、踩坑、与预期不符的行为
+## 验证证据        # 实际运行的测试命令与输出摘要；benchmark 实测数字（禁止转述/编造）
+## 遗留与 handoff  # 未完成项、下一步、给下一个 session 的注意事项
+```
+
+原则：**写给下一个接手的人（或下一个上下文周期的你自己）**，可复核、有证据、不粉饰。
+
+### 5.4 TODO.md 活文档
+
+每个自闭环变更合入时同步更新 [docs/TODO.md](docs/TODO.md)：勾选项用 `[x]`/`[~]`/`[ ]`/`(!)` 图例，并在 Done 区追加一行带月份与 ADR 指针的记录。
+
+---
+
+## 6. 项目记忆与长上下文 Handoff
+
+整体开发是一个长周期、长上下文的任务。约定用「磁盘化记忆 + 上下文卸载」保证跨 session / 跨上下文压缩的连续性。
+
+### 6.1 记忆分层
+
+| 层 | 载体 | 寿命 | 内容 |
+| --- | --- | --- | --- |
+| 规范层 | 本文档（AGENTS.md） | 长期 | 协作规范，低频修订 |
+| 决策层 | `docs/adr/` | 永久 | 编号化设计决策，只增不删 |
+| 状态层 | `docs/memory/MEMORY.md` | 持续更新 | 项目当前快照（见下） |
+| 过程层 | `docs/session-logs/` | 追加归档 | 每次 session 的过程与证据 |
+| 路线层 | `docs/TODO.md` | 持续更新 | 优先级与完成状态 |
+
+`docs/memory/MEMORY.md` 保持精简（目标一屏内），只存**结论与指针**，详细内容落到 ADR/session-log，避免两处漂移：
+
+```markdown
+# MEMORY
+- 快照：当前里程碑（M1/M2 已完成，M3 部分，P0/P1 …）｜一句话系统形态
+- 进行中：<进行中的任务与所在 session-log 指针>
+- 环境事实：<平台差异 / 二进制依赖位置 / 哪些测试在本机 skip 及原因 / dsh 本地 checkout 路径等>
+- 坑与注意：<已知的上游限制（如 runsc rootless 不支持 restore）、易错点>
+- 决策索引：<主题 → ADR 编号的速查表>
+```
+
+### 6.2 Handoff 流程
+
+**Session 启动（或上下文被压缩/接手新任务）时，按序恢复上下文：**
+
+1. 本文档（AGENTS.md）；
+2. `docs/memory/MEMORY.md`——当前状态与进行中事项；
+3. `docs/TODO.md`——任务队列与优先级；
+4. 最近一份 `docs/session-logs/`（尤其"遗留与 handoff"节）；
+5. 与本次任务相关的 ADR（按 MEMORY 的决策索引定位）。
+
+**Session 结束（或感知上下文接近上限、即将被压缩）时，先卸载再继续：**
+
+1. 写/更新当日的 session-log（含验证证据与 handoff 注记）；
+2. 增量更新 `MEMORY.md`（快照、进行中、坑）与 `TODO.md`（勾选状态）；
+3. 若有未落 ADR 的既成决策，补 ADR 或在 session-log 中标记"待 ADR 化"。
+
+**铁律：状态先落盘，再关闭上下文。** 任何只存在于对话上下文里的关键结论（设计取舍、测量数字、环境发现），在压缩后等同于丢失。
+
+---
+
+## 7. 附：环境速查
+
+> **环境先检测，不预设平台。** 开发/执行环境不一定是 macOS（可能是 Linux、受限容器、无头 CI）。凡是 VM 级或容器级工作流（microsandbox/krun/krunkit、Docker、k3s 集群、runsc），**执行前先检测所在环境**——平台、可用二进制（`shutil.which`）、虚拟化支持（`/dev/vsock`、`CAP_SYS_ADMIN`）——再决定路径或如实降级/skip。集成测试已按此约定经 `conftest.py` 探测，后端不可达即 skip（禁 mock 铁律 §4.2）。不要把"当前沙箱可不可用"误当成"平台不支持"（参考 k3s 曾经的假性失败）。
+
+- **启动**：`uv sync` → `whirlwind image build echo` → `whirlwind serve --port 8410 --data-dir .whirlwind`
+- **后端切换**：`whirlwind serve --metadata-backend postgres --kv-backend redis`（需 `whirlwind[postgres]` / `whirlwind[redis]` extras）
+- **生产后端依赖**：PostgreSQL / Redis 需本地可达；`tests/integration/conftest.py` 探测，不可达即 skip
+- **gVisor**：`runsc` 仅 Linux；无二进制或受限容器（无 `CAP_SYS_ADMIN`）自动降级 rootless + `--network=none`（rootless 不支持 restore，上游限制）；也验证过可装在 colima 的 Linux Docker VM 内作为 Docker runtime
+- **microsandbox**：libkrun/krunkit（`Isolation.LIGHT_VM`），需 `Virtualization.framework`/真机；colima `--vm-type krunkit` 是其一等后端（ADR-0006）
+- **k3s / macOS**：`colima start --kubernetes`（底层 k3s）即为本地集群；无头沙箱里"不支持"多为执行环境假象，应先在真机/CLI 验证再下结论
+- **dsh**：公开仓库 `github.com/deepseek-ai/deepseek-harness`（MIT）；镜像构建需本地 checkout（`refs/deepseek-harness`，可用 `WHIRLWIND_DSH_REPO` 覆盖）；两个 Python 包均不在 PyPI
+- **部署**：`deploy/k3s/`（镜像构建 + manifest + 可重跑 smoke 脚本）

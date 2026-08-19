@@ -14,6 +14,7 @@ pipeline benches, no mocks:
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,15 @@ from whirlwind.storage.memory import MemoryKVStore, MemoryMetadataStore
 from whirlwind.storage.wal_eventlog import WALEventLog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# The resource profile below combines mem_limit_mb (RLIMIT_AS) + pids_max
+# (RLIMIT_NPROC). On macOS, RLIMIT_AS soft=hard is unsupported and RLIMIT_NPROC
+# is a *uid-global* fork-time count (ADR-0005 D1 honesty note), so a tight
+# pids_max=64 is infeasible on a busy host with >64 uid processes — the sandbox
+# agent cannot fork its harness child (BlockingIOError EAGAIN). The profile is
+# representative on Linux only; macOS cold-start with no limits is covered by
+# test_pipeline_bench.test_cold_start_decision.
+RES_LIMIT_PROFILE_SUPPORTED = sys.platform != "darwin"
 
 PASSTHROUGH_N = 10_000
 PASSTHROUGH_MIN_RATE = 20_000  # middleware-level req/s for keyless requests
@@ -153,6 +163,11 @@ def echo_registry(tmp_path_factory: pytest.TempPathFactory) -> LocalRegistry:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not RES_LIMIT_PROFILE_SUPPORTED,
+    reason="resource profile (RLIMIT_AS + tight RLIMIT_NPROC uid-global count) "
+    "is not mappable on macOS; Linux is the representative path",
+)
 async def test_cold_start_with_resource_limits(
     tmp_path: Path,
     echo_registry: LocalRegistry,

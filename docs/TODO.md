@@ -57,6 +57,14 @@ ADR-0002 已预留 provider 位；P0 先落地单节点 PostgreSQL/Redis。多�
 - [ ] P3.2 WALEventLog → PostgreSQL provider (archived, queryable) and EventBus → NATS provider (ADR-0002 follow-up slots)
 - [ ] P3.3 Snapshot locality routing across hostlets (Architecture M3)
 - [ ] P3.4 Firecracker microVM driver (third substrate, same `SandboxDriver` interface — ADR-0002 follow-up)
+- [~] P3.5 Microsandbox driver for test/dev ergonomics — `Isolation.LIGHT_VM` (libkrun/krunkit, a real VM substrate that runs natively on macOS via Virtualization.framework) riding the existing `SandboxDriver` interface. `process` is too weak to gate VM-grade lifecycle; `runsc` is Linux-only; a libkrun substrate gives a locally-testable VM path on M-series mac AND a dev analog of the Firecracker `MICRO_VM` substrate. Platform facts verified: runsc installs inside colima's Linux Docker VM; colima `--kubernetes` gives macOS k3s; colima `--vm-type krunkit` is a native Apple Silicon VM backend; dsh is a public MIT repo (see MEMORY.env). **Design locked (ADR-0006 Accepted); implementation deferred to a real-host session — document landing done, code pending.**
+  - [x] M0-doc ADR-0006 accepted + impl phase planned (spike / driver / wiring / tests / docs)
+  - [x] Doc sync: ADR-0006 / TODO / MEMORY / AGENTS (index + §1.3 + §7 env-detection) updated
+  - [ ] M0 spike (real mac): probe krunkit availability + CLI surface (create/exec/pause/snapshot)
+  - [ ] M1 driver skeleton: `drivers/microsandbox.py` (`SandboxDriver`, `Isolation.LIGHT_VM`)
+  - [ ] M2 wiring: `--sandbox-driver microsandbox`, zero `control`/`hostlet` change
+  - [ ] M3 tests: `test_microsandbox_driver.py`, gated on backend availability (skip + reason)
+  - [ ] M4 memory: flip ADR to fully delivered, refresh TODO/MEMORY/AGENTS
 
 ## P4 — Scale-out operations / 规模化运营（M4）
 
