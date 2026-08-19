@@ -206,4 +206,3 @@ WHIRLWIND_E2E=1 uv run python -m pytest tests/e2e -q  # 真实 DeepSeek API（�
 
 Test strategy (ADR §6): **no mocking / faking / cheating** — integration tests run real subprocesses, real filesystems, and real local HTTP; runsc tests are skipped without the binary rather than stubbed. Benchmarks include the ADR acceptance lines: cold-start p50 ≤ 250ms, event log group-commit burst ≥ 5k/s, time wheel 10k schedules, bus fan-out 20k/s.
 
-测试策略（ADR §6）：**禁止 mock / 伪造 / 作弊**——集成测试跑真实子进程、真实文件系统、真实本地 HTTP；runsc 测试在无二进制时跳过而非打桩。benchmark 含 ADR 验收线：冷启动 p50 ≤ 250ms、事件日志组提交突发 ≥ 5k/s、时间轮 10k 调度、总线扇出 20k/s。
