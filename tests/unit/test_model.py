@@ -2,7 +2,7 @@
 
 import time
 
-from argus.core import (
+from whirlwind.core import (
     AgentSession,
     AgentVersion,
     SessionEvent,

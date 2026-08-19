@@ -2,8 +2,8 @@
 
 import pytest
 
-from argus.core import AgentVersion, SeamBindingDecl, SeamConsumerDecl, SeamError, SkillRef
-from argus.seam import SeamConsumer, SeamRegistry, SeamRenderer
+from whirlwind.core import AgentVersion, SeamBindingDecl, SeamConsumerDecl, SeamError, SkillRef
+from whirlwind.seam import SeamConsumer, SeamRegistry, SeamRenderer
 
 
 def _version(bindings, harness="dsh") -> AgentVersion:
@@ -95,7 +95,7 @@ def test_manifest_render_includes_skills_and_endpoints():
         version,
         session_id="ses_1",
         workspace_root="/ws",
-        skills=[(SkillRef(name="demo", version="1.0.0"), "/ws/.argus/skills/demo-1.0.0")],
+        skills=[(SkillRef(name="demo", version="1.0.0"), "/ws/.whirlwind/skills/demo-1.0.0")],
         llm_relay_url="http://127.0.0.1:7000/relay/llm",
         events_post_url="http://127.0.0.1:7000/events",
     )
@@ -105,13 +105,13 @@ def test_manifest_render_includes_skills_and_endpoints():
     assert manifest.model_config_decl["model"] == "deepseek-chat"
     assert manifest.llm_relay_url.endswith("/relay/llm")
     # manifest must be JSON-roundtrippable (it crosses the sandbox boundary as a file)
-    from argus.seam import InjectionManifest
+    from whirlwind.seam import InjectionManifest
 
     assert InjectionManifest.model_validate_json(manifest.model_dump_json()) == manifest
 
 
 def test_registry_extension():
-    from argus.seam import ProviderSpec, SeamDefinition, SeamTool
+    from whirlwind.seam import ProviderSpec, SeamDefinition, SeamTool
 
     registry = SeamRegistry()
     registry.register_seam(

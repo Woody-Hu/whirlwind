@@ -16,18 +16,18 @@ import httpx
 import pytest
 import uvicorn
 
-from argus.runtime import ArgusRuntime, RuntimeConfig
+from whirlwind.runtime import WhirlwindRuntime, RuntimeConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
 async def base_url(tmp_path: Path, llm_upstream: str) -> str:
-    runtime = ArgusRuntime(
+    runtime = WhirlwindRuntime(
         RuntimeConfig(
             data_dir=tmp_path / "runtime",
             repo_root=REPO_ROOT,
-            api_key_env="ARGUS_TEST_KEY",
+            api_key_env="WHIRLWIND_TEST_KEY",
             llm_upstream=llm_upstream,
         )
     )
@@ -125,7 +125,7 @@ async def test_rest_agent_session_lifecycle(gateway: httpx.AsyncClient) -> None:
     # 404 + error envelope shape
     missing = await gateway.get("/sessions/ses_missing")
     assert missing.status_code == 404
-    assert missing.json()["error"]["code"] == "argus/not-found"
+    assert missing.json()["error"]["code"] == "whirlwind/not-found"
 
 
 @pytest.mark.asyncio
@@ -204,7 +204,7 @@ async def test_mcp_gateway_tools_and_calls(gateway: httpx.AsyncClient) -> None:
     response = await gateway.post(f"/mcp/{version_id}", json=rpc("initialize"))
     assert response.status_code == 200
     body = response.json()
-    assert body["result"]["serverInfo"]["name"] == "argus-mcp"
+    assert body["result"]["serverInfo"]["name"] == "whirlwind-mcp"
 
     # tools/list: only seams with a "*" consumer are exposed
     response = await gateway.post(f"/mcp/{version_id}", json=rpc("tools/list", {}))

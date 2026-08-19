@@ -2,7 +2,7 @@
 
 import asyncio
 
-from argus.timer import CronExpr, CronParseError, HierarchicalTimer
+from whirlwind.timer import CronExpr, CronParseError, HierarchicalTimer
 
 
 class FakeClock:

@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from argus.core import SnapshotKind
-from argus.core.errors import ArgusError
-from argus.drivers import (
+from whirlwind.core import SnapshotKind
+from whirlwind.core.errors import WhirlwindError
+from whirlwind.drivers import (
     Density,
     DriverError,
     ExecSpec,
@@ -29,12 +29,12 @@ from argus.drivers import (
 )
 
 SRC = str(Path(__file__).resolve().parents[2] / "src")
-ECHO_ARGV = [sys.executable, "-m", "argus.harness.echo_server"]
+ECHO_ARGV = [sys.executable, "-m", "whirlwind.harness.echo_server"]
 BASE_ENV = {"PYTHONPATH": SRC, "PYTHONUNBUFFERED": "1"}
 
 
 def _spec(tmp_path: Path, sandbox_id: str, argv: list[str], env: dict | None = None) -> object:
-    from argus.drivers import SandboxSpec
+    from whirlwind.drivers import SandboxSpec
 
     return SandboxSpec(
         sandbox_id=sandbox_id,
@@ -83,16 +83,16 @@ async def test_create_spawns_real_process_in_workspace(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_env_is_whitelist_not_inheritance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ARGUS_HOST_SECRET", "do-not-leak")
+    monkeypatch.setenv("WHIRLWIND_HOST_SECRET", "do-not-leak")
     driver = ProcessDriver()
-    env = {**BASE_ENV, "ARGUS_SANDBOX_MARK": "42"}
+    env = {**BASE_ENV, "WHIRLWIND_SANDBOX_MARK": "42"}
     spec = _spec(tmp_path, "sb-env", ["/bin/sleep", "30"], env=env)
     await driver.create(spec)
     try:
         result = await driver.exec("sb-env", ExecSpec(argv=["/usr/bin/env"]))
         assert result.exit_code == 0
-        assert "ARGUS_SANDBOX_MARK=42" in result.stdout
-        assert "ARGUS_HOST_SECRET" not in result.stdout
+        assert "WHIRLWIND_SANDBOX_MARK=42" in result.stdout
+        assert "WHIRLWIND_HOST_SECRET" not in result.stdout
         var_names = {line.split("=", 1)[0] for line in result.stdout.splitlines() if "=" in line}
         assert "PATH" not in var_names  # even PATH does not leak
     finally:

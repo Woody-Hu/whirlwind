@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-from argus.core import AgentDefinition, AgentSession, AgentVersion, CronJob, SkillRef, new_session_id
-from argus.core.errors import Conflict, NotFound
-from argus.storage import WALEventLog, LocalObjectStore, MemoryKVStore, MemoryLocks, MemoryMetadataStore
+from whirlwind.core import AgentDefinition, AgentSession, AgentVersion, CronJob, SkillRef, new_session_id
+from whirlwind.core.errors import Conflict, NotFound
+from whirlwind.storage import WALEventLog, LocalObjectStore, MemoryKVStore, MemoryLocks, MemoryMetadataStore
 
 
 async def test_metadata_agent_crud_and_name_uniqueness(tmp_path):
@@ -96,14 +96,14 @@ async def test_locks_mutual_exclusion():
 async def test_object_store_roundtrip_and_escape_guard(tmp_path):
     store = LocalObjectStore(tmp_path / "objects")
     blob = tmp_path / "blob.bin"
-    blob.write_bytes(b"\x00\x01\x02argus")
+    blob.write_bytes(b"\x00\x01\x02whirlwind")
     uri = await store.put("snaps/snap_1/data.tar", blob)
     assert uri.startswith("local://")
     dest = tmp_path / "out" / "data.tar"
     await store.fetch("snaps/snap_1/data.tar", dest)
-    assert dest.read_bytes() == b"\x00\x01\x02argus"
+    assert dest.read_bytes() == b"\x00\x01\x02whirlwind"
     stat = await store.stat("snaps/snap_1/data.tar")
-    assert stat is not None and stat["size"] == 8
+    assert stat is not None and stat["size"] == 12
     await store.delete("snaps/snap_1/data.tar")
     assert await store.stat("snaps/snap_1/data.tar") is None
     with pytest.raises(FileNotFoundError):

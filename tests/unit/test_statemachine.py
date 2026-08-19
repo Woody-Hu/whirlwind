@@ -2,9 +2,9 @@
 
 import pytest
 
-from argus.core.errors import InvalidTransition
-from argus.core.model import SandboxStatus, SessionStatus
-from argus.core.statemachine import SANDBOX_TRANSITIONS, SESSION_TRANSITIONS, check_transition
+from whirlwind.core.errors import InvalidTransition
+from whirlwind.core.model import SandboxStatus, SessionStatus
+from whirlwind.core.statemachine import SANDBOX_TRANSITIONS, SESSION_TRANSITIONS, check_transition
 
 
 def test_session_legal_transitions() -> None:

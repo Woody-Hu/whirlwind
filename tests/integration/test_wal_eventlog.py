@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from argus.storage import WALEventLog
+from whirlwind.storage import WALEventLog
 
 
 async def test_group_commit_bursts_into_few_fsyncs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

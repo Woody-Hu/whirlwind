@@ -14,16 +14,16 @@ from pathlib import Path
 
 import pytest
 
-from argus.bus import InProcessEventBus
-from argus.control import WarmPool, WarmPoolConfig
-from argus.core import AgentDefinition, AgentSession, AgentVersion, SandboxStatus, new_agent_id, new_session_id, new_version_id
-from argus.drivers import ProcessDriver
-from argus.harness.adapter import default_registry
-from argus.hostlet import Hostlet, HostletConfig
-from argus.imaging import LocalRegistry, echo_image_build
-from argus.seam.model import SeamRenderer
-from argus.storage.wal_eventlog import WALEventLog
-from argus.storage.memory import MemoryKVStore, MemoryMetadataStore
+from whirlwind.bus import InProcessEventBus
+from whirlwind.control import WarmPool, WarmPoolConfig
+from whirlwind.core import AgentDefinition, AgentSession, AgentVersion, SandboxStatus, new_agent_id, new_session_id, new_version_id
+from whirlwind.drivers import ProcessDriver
+from whirlwind.harness.adapter import default_registry
+from whirlwind.hostlet import Hostlet, HostletConfig
+from whirlwind.imaging import LocalRegistry, echo_image_build
+from whirlwind.seam.model import SeamRenderer
+from whirlwind.storage.wal_eventlog import WALEventLog
+from whirlwind.storage.memory import MemoryKVStore, MemoryMetadataStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WARM_COUNT = 6
@@ -59,7 +59,7 @@ async def test_warm_claim_p50(
         bus=bus,
         config=HostletConfig(
             data_dir=tmp_path,
-            api_key_env="ARGUS_TEST_KEY",
+            api_key_env="WHIRLWIND_TEST_KEY",
             llm_upstream="http://127.0.0.1:9",  # never reached: no turns are sent
         ),
     )

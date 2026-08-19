@@ -1,6 +1,6 @@
 """Timing wheel benchmarks vs a naive heapq baseline (real timing, no mocks)."""
 
-from argus.timer import HeapTimerBaseline, HierarchicalTimer
+from whirlwind.timer import HeapTimerBaseline, HierarchicalTimer
 
 
 class FakeClock:

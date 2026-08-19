@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from argus.core import SnapshotKind
-from argus.drivers import (
+from whirlwind.core import SnapshotKind
+from whirlwind.drivers import (
     Density,
     DriverError,
     ExecSpec,
@@ -98,7 +98,7 @@ def test_capabilities_reported_truthfully(tmp_path: Path) -> None:
 
 
 def test_render_oci_config_maps_paths_into_rootfs(tmp_path: Path) -> None:
-    from argus.drivers.runsc import _render_oci_config
+    from whirlwind.drivers.runsc import _render_oci_config
 
     spec = _spec(tmp_path, "sbx_1")
     config = _render_oci_config(spec.bundle_root, spec)
@@ -116,7 +116,7 @@ def test_render_oci_config_maps_paths_into_rootfs(tmp_path: Path) -> None:
 
 
 def test_render_oci_config_rejects_launcher_outside_bundle(tmp_path: Path) -> None:
-    from argus.drivers.runsc import _in_rootfs
+    from whirlwind.drivers.runsc import _in_rootfs
 
     bundle = tmp_path / "bundle"
     with pytest.raises(DriverError):
@@ -143,10 +143,10 @@ async def test_lifecycle_end_to_end(tmp_path: Path) -> None:
     # a real exec inside the sandbox (guest kernel = runsc Sentry)
     result = await driver.exec(
         spec.sandbox_id,
-        ExecSpec(argv=["/bin/busybox", "echo", "hello-argus"], timeout_s=30.0),
+        ExecSpec(argv=["/bin/busybox", "echo", "hello-whirlwind"], timeout_s=30.0),
     )
     assert result.exit_code == 0
-    assert "hello-argus" in result.stdout
+    assert "hello-whirlwind" in result.stdout
 
     # the exec ran with cwd pinned to the workspace bind mount
     result = await driver.exec(
@@ -169,7 +169,7 @@ async def test_lifecycle_end_to_end(tmp_path: Path) -> None:
 
     await driver.destroy(spec.sandbox_id)
     # deleted: further lifecycle ops must say the sandbox is gone
-    from argus.drivers import SandboxNotFound
+    from whirlwind.drivers import SandboxNotFound
 
     with pytest.raises(SandboxNotFound):
         driver.instance(spec.sandbox_id)

@@ -8,7 +8,7 @@ forwarded verbatim by the LLM relay — uvicorn/h11 rejects such requests with
 
 from __future__ import annotations
 
-from argus.agent.server import _parse_header_lines
+from whirlwind.agent.server import _parse_header_lines
 
 
 def test_no_empty_header_from_trailing_crlf() -> None:

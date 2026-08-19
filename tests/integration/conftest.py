@@ -19,7 +19,7 @@ async def llm_upstream(monkeypatch: pytest.MonkeyPatch) -> str:
     Downstream tests point the Hostlet SecretRelay at this base URL; the
     fixture asserts (on teardown) that the key was actually exercised.
     """
-    monkeypatch.setenv("ARGUS_TEST_KEY", API_KEY_SENTINEL)
+    monkeypatch.setenv("WHIRLWIND_TEST_KEY", API_KEY_SENTINEL)
     seen: dict[str, str] = {}
     app = FastAPI()
 

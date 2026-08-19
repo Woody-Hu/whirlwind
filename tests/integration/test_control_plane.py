@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from argus.bus import InProcessEventBus
-from argus.control import LifecycleManager, Scheduler, SessionManager, WarmPool, WarmPoolConfig
-from argus.core import (
+from whirlwind.bus import InProcessEventBus
+from whirlwind.control import LifecycleManager, Scheduler, SessionManager, WarmPool, WarmPoolConfig
+from whirlwind.core import (
     AgentDefinition,
     AgentVersion,
     SandboxStatus,
@@ -22,15 +22,15 @@ from argus.core import (
     new_agent_id,
     new_version_id,
 )
-from argus.core.errors import Conflict, NotFound
-from argus.drivers import Density, ProcessDriver
-from argus.harness.adapter import default_registry
-from argus.hostlet import Hostlet, HostletConfig
-from argus.imaging import LocalRegistry, echo_image_build
-from argus.seam.model import SeamRenderer
-from argus.storage.wal_eventlog import WALEventLog
-from argus.storage.memory import MemoryKVStore, MemoryMetadataStore
-from argus.timer.wheel import HierarchicalTimer
+from whirlwind.core.errors import Conflict, NotFound
+from whirlwind.drivers import Density, ProcessDriver
+from whirlwind.harness.adapter import default_registry
+from whirlwind.hostlet import Hostlet, HostletConfig
+from whirlwind.imaging import LocalRegistry, echo_image_build
+from whirlwind.seam.model import SeamRenderer
+from whirlwind.storage.wal_eventlog import WALEventLog
+from whirlwind.storage.memory import MemoryKVStore, MemoryMetadataStore
+from whirlwind.timer.wheel import HierarchicalTimer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -74,7 +74,7 @@ async def test_session_lifecycle_with_idle_timeout(
         bus=bus,
         config=HostletConfig(
             data_dir=tmp_path,
-            api_key_env="ARGUS_TEST_KEY",
+            api_key_env="WHIRLWIND_TEST_KEY",
             llm_upstream=llm_upstream,
         ),
     )
@@ -154,7 +154,7 @@ async def test_second_turn_reuses_sandbox(
         bus=bus,
         config=HostletConfig(
             data_dir=tmp_path,
-            api_key_env="ARGUS_TEST_KEY",
+            api_key_env="WHIRLWIND_TEST_KEY",
             llm_upstream=llm_upstream,
         ),
     )
@@ -234,7 +234,7 @@ async def test_warm_pool_claim_beats_cold_start(
         bus=bus,
         config=HostletConfig(
             data_dir=tmp_path,
-            api_key_env="ARGUS_TEST_KEY",
+            api_key_env="WHIRLWIND_TEST_KEY",
             llm_upstream=llm_upstream,
         ),
     )

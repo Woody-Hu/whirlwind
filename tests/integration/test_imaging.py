@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from argus.core.errors import Conflict
-from argus.drivers import ExecSpec, ProcessDriver, SandboxSpec
-from argus.harness.protocol import HarnessRpc
-from argus.imaging import ImageBuild, ImageNotFound, LocalRegistry, echo_image_build
+from whirlwind.core.errors import Conflict
+from whirlwind.drivers import ExecSpec, ProcessDriver, SandboxSpec
+from whirlwind.harness.protocol import HarnessRpc
+from whirlwind.imaging import ImageBuild, ImageNotFound, LocalRegistry, echo_image_build
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,11 +31,11 @@ async def test_register_and_resolve_roundtrip(tmp_path: Path) -> None:
     bundle = await registry.resolve("echo")
     assert bundle.harness == "echo"
     assert Path(bundle.launcher[0]).is_file()
-    assert bundle.launcher == [str(bundle.root / "venv" / "bin" / "python"), "-m", "argus.harness.echo_server"]
+    assert bundle.launcher == [str(bundle.root / "venv" / "bin" / "python"), "-m", "whirlwind.harness.echo_server"]
     # the manifest is the registry's source of truth
     manifest = json.loads((bundle.root / "manifest.json").read_text())
     assert manifest["name"] == "echo"
-    assert "argus @ file://" in manifest["requirements"][0]
+    assert "whirlwind @ file://" in manifest["requirements"][0]
 
 
 @pytest.mark.asyncio

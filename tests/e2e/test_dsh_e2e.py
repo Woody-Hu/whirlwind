@@ -1,6 +1,6 @@
 """E2E acceptance: native DeepSeek Harness image on the real DeepSeek API.
 
-Gated behind ARGUS_E2E=1 + DEEPSEEK_API_KEY (ADR-0001: e2e tests touch the
+Gated behind WHIRLWIND_E2E=1 + DEEPSEEK_API_KEY (ADR-0001: e2e tests touch the
 paid upstream; the default suite must not). Everything here is real:
 
 - the dsh image is a real venv pip-installed from the deepseek-harness
@@ -27,14 +27,14 @@ import httpx
 import pytest
 import uvicorn
 
-from argus.imaging import LocalRegistry, dsh_image_build
-from argus.runtime import ArgusRuntime, RuntimeConfig
+from whirlwind.imaging import LocalRegistry, dsh_image_build
+from whirlwind.runtime import WhirlwindRuntime, RuntimeConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("ARGUS_E2E") != "1" or not os.environ.get("DEEPSEEK_API_KEY"),
-    reason="set ARGUS_E2E=1 and DEEPSEEK_API_KEY to run paid-upstream e2e tests",
+    os.environ.get("WHIRLWIND_E2E") != "1" or not os.environ.get("DEEPSEEK_API_KEY"),
+    reason="set WHIRLWIND_E2E=1 and DEEPSEEK_API_KEY to run paid-upstream e2e tests",
 )
 
 MODEL_DECL = {"provider": "deepseek-official", "model": "deepseek-v4-flash"}
@@ -54,7 +54,7 @@ def data_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 class _Stack:
     """One runtime + real uvicorn server per test; image reused from data_dir."""
 
-    def __init__(self, runtime: ArgusRuntime, client: httpx.AsyncClient) -> None:
+    def __init__(self, runtime: WhirlwindRuntime, client: httpx.AsyncClient) -> None:
         self.runtime = runtime
         self.client = client
 
@@ -103,7 +103,7 @@ class _Stack:
 @pytest.fixture
 async def stack(data_dir: Path) -> _Stack:
     # same data_dir across tests: the module-scoped dsh image is resolved, not rebuilt
-    runtime = ArgusRuntime(RuntimeConfig(data_dir=data_dir, repo_root=REPO_ROOT))
+    runtime = WhirlwindRuntime(RuntimeConfig(data_dir=data_dir, repo_root=REPO_ROOT))
     server = uvicorn.Server(uvicorn.Config(runtime.app, host="127.0.0.1", port=0, log_level="warning"))
     task = asyncio.get_running_loop().create_task(server.serve())
     for _ in range(200):
@@ -197,11 +197,11 @@ async def test_dsh_skill_configured_into_agent(stack: _Stack) -> None:
 
     # injection evidence: staged skill + rendered native config in the sandbox workspace
     workspace = await stack.workspace(session["id"])
-    staged = workspace / ".argus" / "skills" / "codeword" / "SKILL.md"
+    staged = workspace / ".whirlwind" / "skills" / "codeword" / "SKILL.md"
     assert staged.is_file() and "pine-tree" in staged.read_text()
-    cordis = (workspace / ".argus" / "cordis.yml").read_text()
+    cordis = (workspace / ".whirlwind" / "cordis.yml").read_text()
     assert "@deepseek-ai/dsh-skill-filesystem" in cordis
-    assert ".argus/skills" in cordis
+    assert ".whirlwind/skills" in cordis
     await stack.wait_idle(session["id"])
 
 
@@ -213,7 +213,7 @@ async def test_dsh_snapshot_resume_continuity(stack: _Stack) -> None:
 
     Continuity proof: a secret planted in turn 1 must still be known after the
     round-trip — the model can only answer from dsh's persisted session state
-    (.argus/sessions JSONL restored into the new sandbox), never from argus
+    (.whirlwind/sessions JSONL restored into the new sandbox), never from whirlwind
     memory (the process sandbox is destroyed between the two turns).
     """
     await _create_dsh_agent(stack, "dsh-e2e-suspend", seams=[{"seam": "fs.v1", "provider": "sandbox-fs"}])
