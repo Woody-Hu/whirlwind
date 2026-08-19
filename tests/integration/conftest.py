@@ -12,7 +12,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from whirlwind.storage.memory import MemoryMetadataStore
+from whirlwind.storage.memory import MemoryKVStore, MemoryLocks, MemoryMetadataStore
 
 API_KEY_SENTINEL = "sk-test-secret-do-not-leak"
 
@@ -30,6 +30,11 @@ try:
 except ImportError:
     asyncpg = None
 
+try:
+    from redis import asyncio as aioredis  # noqa: F401  (optional extra: whirlwind[redis])
+except ImportError:
+    aioredis = None
+
 
 async def _postgres_reachable(dsn: str) -> bool:
     if asyncpg is None:
@@ -45,6 +50,22 @@ async def _postgres_reachable(dsn: str) -> bool:
         await conn.close()
 
 
+async def _redis_reachable(url: str) -> bool:
+    if aioredis is None:
+        return False
+    try:
+        client = aioredis.from_url(url, decode_responses=True)
+    except Exception:
+        return False
+    try:
+        await asyncio.wait_for(client.ping(), timeout=3.0)
+        return True
+    except Exception:
+        return False
+    finally:
+        await client.aclose()
+
+
 @pytest.fixture
 async def postgres_dsn() -> str:
     """The shared test DSN; skips unless a real PostgreSQL answers."""
@@ -53,6 +74,16 @@ async def postgres_dsn() -> str:
     if not await _postgres_reachable(POSTGRES_DSN):
         pytest.skip(f"postgres not reachable at {POSTGRES_DSN!r}")
     return POSTGRES_DSN
+
+
+@pytest.fixture
+async def redis_url() -> str:
+    """The shared test Redis URL; skips unless a real Redis answers."""
+    if aioredis is None:
+        pytest.skip("redis not installed (whirlwind[redis])")
+    if not await _redis_reachable(REDIS_URL):
+        pytest.skip(f"redis not reachable at {REDIS_URL!r}")
+    return REDIS_URL
 
 
 @pytest.fixture(params=["memory", "postgres"])
@@ -82,6 +113,53 @@ async def metadata_store(request, tmp_path):
         yield store
     finally:
         await store.aclose()
+
+
+@pytest.fixture(params=["memory", "redis"])
+async def kv_store(request):
+    """The KVStore contract suite runs against every backend."""
+    if request.param == "memory":
+        kv = MemoryKVStore()
+        await kv.start()
+        try:
+            yield kv
+        finally:
+            await kv.aclose()
+        return
+    if aioredis is None:
+        pytest.skip("redis not installed (whirlwind[redis])")
+    if not await _redis_reachable(REDIS_URL):
+        pytest.skip(f"redis not reachable at {REDIS_URL!r}")
+    from whirlwind.storage.redis import RedisKVStore
+
+    kv = RedisKVStore(REDIS_URL)
+    await kv.start()
+    await kv.client.flushdb()
+    try:
+        yield kv
+    finally:
+        await kv.aclose()
+
+
+@pytest.fixture(params=["memory", "redis"])
+async def lock_provider(request):
+    """The LockProvider contract suite runs against every backend."""
+    if request.param == "memory":
+        yield MemoryLocks()
+        return
+    if aioredis is None:
+        pytest.skip("redis not installed (whirlwind[redis])")
+    if not await _redis_reachable(REDIS_URL):
+        pytest.skip(f"redis not reachable at {REDIS_URL!r}")
+    from whirlwind.storage.redis import RedisLocks
+
+    locks = RedisLocks(REDIS_URL)
+    await locks.start()
+    await locks.client.flushdb()
+    try:
+        yield locks
+    finally:
+        await locks.aclose()
 
 
 @pytest.fixture

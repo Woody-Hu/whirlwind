@@ -3,8 +3,8 @@
 The MetadataStore suite is parameterized over every backend (memory always;
 PostgreSQL against a real service, skipped when absent) — parity between
 implementations is enforced by running the same assertions, never assumed.
-KV / locks / object store / event log still run against their in-process
-implementations; Redis joins the KV contract suite in its own change.
+The KVStore and LockProvider suites are parameterized the same way over
+memory and Redis. Object store / event log remain in-process only.
 """
 
 import asyncio
@@ -24,7 +24,7 @@ from whirlwind.core import (
     new_session_id,
 )
 from whirlwind.core.errors import Conflict, NotFound
-from whirlwind.storage import WALEventLog, LocalObjectStore, MemoryKVStore, MemoryLocks, MemoryMetadataStore
+from whirlwind.storage import WALEventLog, LocalObjectStore
 
 
 # ------------------------------------------------- MetadataStore contract
@@ -150,34 +150,87 @@ async def test_postgres_metadata_survives_restart(postgres_dsn, tmp_path):
         await store2.aclose()
 
 
-# --------------------------------- KV / locks (in-process, Redis joins later)
+# ------------------------------- KV / locks contract (memory + Redis)
 
-async def test_kv_cas_atomicity_under_concurrency():
-    kv = MemoryKVStore()
-    await kv.put("route/ses_1", "sbx_a")
+async def test_kv_get_put_delete_cas(kv_store):
+    assert await kv_store.get("route/ses_1") is None
+    # CAS from missing with wrong expectation fails; with None succeeds
+    assert await kv_store.cas("route/ses_1", "stale", "sbx_a") is False
+    assert await kv_store.cas("route/ses_1", None, "sbx_a") is True
+    assert await kv_store.get("route/ses_1") == "sbx_a"
+    # put overwrites; CAS against the old value then fails
+    await kv_store.put("route/ses_1", "sbx_b")
+    assert await kv_store.cas("route/ses_1", "sbx_a", "sbx_c") is False
+    assert await kv_store.cas("route/ses_1", "sbx_b", "sbx_c") is True
+    await kv_store.delete("route/ses_1")
+    assert await kv_store.get("route/ses_1") is None
+    assert await kv_store.cas("route/ses_1", "sbx_c", "sbx_d") is False
+
+
+async def test_kv_cas_atomicity_under_concurrency(kv_store):
+    await kv_store.put("route/ses_1", "sbx_a")
     results = await asyncio.gather(
-        kv.cas("route/ses_1", "sbx_a", "sbx_b"),
-        kv.cas("route/ses_1", "sbx_a", "sbx_c"),
+        kv_store.cas("route/ses_1", "sbx_a", "sbx_b"),
+        kv_store.cas("route/ses_1", "sbx_a", "sbx_c"),
     )
     # exactly one CAS from sbx_a succeeds
     assert results.count(True) == 1
-    assert await kv.get("route/ses_1") in ("sbx_b", "sbx_c")
+    assert await kv_store.get("route/ses_1") in ("sbx_b", "sbx_c")
 
 
-async def test_kv_ttl_expiry():
-    kv = MemoryKVStore()
-    await kv.put("lease/sbx_1", "alive", ttl_s=0.05)
-    assert await kv.get("lease/sbx_1") == "alive"
+async def test_kv_ttl_expiry(kv_store):
+    await kv_store.put("lease/sbx_1", "alive", ttl_s=0.05)
+    assert await kv_store.get("lease/sbx_1") == "alive"
     await asyncio.sleep(0.08)
-    assert await kv.get("lease/sbx_1") is None
+    assert await kv_store.get("lease/sbx_1") is None
 
 
-async def test_locks_mutual_exclusion():
-    locks = MemoryLocks()
-    assert await locks.acquire("op", ttl_s=5) is True
-    assert await locks.acquire("op", ttl_s=5) is False
-    await locks.release("op")
-    assert await locks.acquire("op", ttl_s=5) is True
+async def test_locks_mutual_exclusion(lock_provider):
+    assert await lock_provider.acquire("op", ttl_s=5) is True
+    assert await lock_provider.acquire("op", ttl_s=5) is False
+    await lock_provider.release("op")
+    assert await lock_provider.acquire("op", ttl_s=5) is True
+
+
+# --------------------------------- Redis-specific multi-process proof
+
+async def test_redis_kv_and_locks_across_instances(redis_url):
+    """The headline multi-process property: two independent clients
+    connected to the same Redis see each other's writes, CAS still picks
+    exactly one winner, and locks exclude across instance boundaries."""
+    from whirlwind.storage.redis import RedisKVStore, RedisLocks
+
+    a = RedisKVStore(redis_url)
+    b = RedisKVStore(redis_url)
+    await a.start()
+    await b.start()
+    try:
+        await a.client.flushdb()
+        await a.put("route/ses_x", "sbx_a")
+        assert await b.get("route/ses_x") == "sbx_a"  # b sees a's write
+
+        results = await asyncio.gather(
+            a.cas("route/ses_x", "sbx_a", "sbx_b"),
+            b.cas("route/ses_x", "sbx_a", "sbx_c"),
+        )
+        assert results.count(True) == 1
+        assert await a.get("route/ses_x") in ("sbx_b", "sbx_c")
+    finally:
+        await a.aclose()
+        await b.aclose()
+
+    la = RedisLocks(redis_url)
+    lb = RedisLocks(redis_url)
+    await la.start()
+    await lb.start()
+    try:
+        assert await la.acquire("op", ttl_s=5) is True
+        assert await lb.acquire("op", ttl_s=5) is False  # cross-instance exclusion
+        await la.release("op")
+        assert await lb.acquire("op", ttl_s=5) is True
+    finally:
+        await la.aclose()
+        await lb.aclose()
 
 
 # ------------------------------------- object store / event log (unchanged)
