@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from argus.transport import Endpoint, parse_endpoint, parse_url
+from whirlwind.transport import Endpoint, parse_endpoint, parse_url
 
 
 def test_parse_bare_endpoints() -> None:
     assert parse_endpoint("tcp://127.0.0.1:8411") == Endpoint("tcp", "127.0.0.1", 8411)
     assert parse_endpoint("vsock://2:12345") == Endpoint("vsock", "2", 12345)
-    assert parse_endpoint("unix:///tmp/argus.sock") == Endpoint("unix", "/tmp/argus.sock")
+    assert parse_endpoint("unix:///tmp/whirlwind.sock") == Endpoint("unix", "/tmp/whirlwind.sock")
 
 
 def test_parse_url_tcp() -> None:
@@ -29,12 +29,12 @@ def test_parse_url_bare_authority_defaults_to_tcp() -> None:
 
 
 def test_parse_url_unix() -> None:
-    endpoint, base = parse_url("http+unix:///tmp/argus.sock")
-    assert endpoint == Endpoint("unix", "/tmp/argus.sock")
+    endpoint, base = parse_url("http+unix:///tmp/whirlwind.sock")
+    assert endpoint == Endpoint("unix", "/tmp/whirlwind.sock")
     assert base == ""
     # the socket path is the whole path; agent routes are appended by callers
-    endpoint, base = parse_url("http+unix:///tmp/argus.sock/ingest")
-    assert endpoint == Endpoint("unix", "/tmp/argus.sock/ingest")
+    endpoint, base = parse_url("http+unix:///tmp/whirlwind.sock/ingest")
+    assert endpoint == Endpoint("unix", "/tmp/whirlwind.sock/ingest")
     assert base == ""
 
 

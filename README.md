@@ -1,48 +1,104 @@
-# Argus Agent Runtime
+# Whirlwind Agent Runtime
+
+# Whirlwind Agent Runtime（智能体运行时）
+
+A harness-agnostic, sandboxed agent runtime. It treats any agent harness (DeepSeek Harness / dsh, echo, or a custom loop) as a black-box process placed inside a managed sandbox. The platform uniformly handles session routing, sandbox scheduling, snapshot restore, pool prewarming, event streaming, and capability injection.
 
 harness 无感的沙箱化智能体运行时——把任意 agent harness（DeepSeek Harness / dsh、echo、自研 loop）当作黑盒进程装进受管沙箱，平台统一负责会话路由、沙箱调度、快照恢复、池化预热、事件流与能力注入。
 
+- **Language**: Python 3.12+ / asyncio / FastAPI (deps: only `fastapi`, `uvicorn`, `httpx`, `pydantic`)
 - **语言**：Python 3.12+ / asyncio / FastAPI（依赖仅 `fastapi`、`uvicorn`、`httpx`、`pydantic`）
+
+- **Form factor**: single-process all-in-one (M1 vertical slice) → Linux cluster with multiple substrates (M3, evolving)
 - **形态**：单进程 all-in-one（M1 竖切）→ Linux 集群多 substrate（M3 演进中）
+
+- **Docs**: [Architecture design](agent-runtime-architecture.md) · [ADR-0001 M1/M2 vertical slice](docs/adr/0001-agent-runtime-m1.md) · [ADR-0002 M3 sandbox substrate](docs/adr/0002-m3-substrates.md)
 - **文档**：[架构设计](agent-runtime-architecture.md) · [ADR-0001 M1/M2 竖切](docs/adr/0001-agent-runtime-m1.md) · [ADR-0002 M3 沙箱底座](docs/adr/0002-m3-substrates.md)
 
+## Core Capabilities
+
 ## 核心能力
+
+| Capability | Description |
+| --- | --- |
+| **Harness-agnostic mounting** | The platform only deals with the "sandbox + events + capability contract". Harness images that satisfy the contract can be hot-plugged (dsh via stdio JSON-RPC; echo as the test baseline). The platform never modifies their code |
+| **Sandbox as the execution unit** | All agent execution happens inside managed sandboxes. `SandboxDriver` is a single interface with multiple implementations; capability bits (isolation / snapshot / density / net_policy) are reported truthfully, and scheduling relies only on capability bits |
+| **Snapshots & lifecycle** | Session-level suspend / resume: DATA snapshot (workspace layer) + FULL snapshot (runsc/CRIU memory + rootfs); the dsh side uses an adopt-or-create shim for playback |
+| **Secrets never enter the sandbox** | Inside the sandbox there is only a relay placeholder (`DEEPSEEK_API_KEY=whirlwind-relay`); real credentials live only in the Hostlet's SecretRelay and replace the Authorization header on egress |
+| **Capability Seam** | Skill / Tool / Memory platform concepts compile into Seam contracts (Definition / Provider / Consumer), injected into the sandbox via the Renderer; non-native harnesses fall back to the MCP Gateway |
+| **Replayable** | Durable WAL event log: appends return only after fsync lands on disk; crash recovery truncates torn records; group commit amortizes fsync cost |
+| **Multi-substrate communication** | The Hostlet ↔ SandboxAgent link is uniformly abstracted: TCP / Unix Domain Socket / virtio-vsock (microVM form) share the same API |
 
 | 能力 | 说明 |
 | --- | --- |
 | **Harness 无感挂载** | 平台只与「沙箱 + 事件 + 能力契约」打交道。满足契约的 harness 镜像热插拔挂载（dsh 经 stdio JSON-RPC，echo 为测试基线），平台不修改其任何代码 |
 | **沙箱即执行单元** | 一切 agent 执行发生在受管沙箱内。`SandboxDriver` 单接口多实现，能力位（isolation / snapshot / density / net_policy）如实上报，调度只认能力位 |
 | **快照与生命周期** | 会话级 suspend / resume：DATA 快照（工作区层）+ FULL 快照（runsc/CRIU 内存+rootfs）；dsh 侧 adopt-or-create shim 实现续播 |
-| **密钥不进沙箱** | 沙箱内只有 relay 占位符（`DEEPSEEK_API_KEY=argus-relay`），真实凭证仅存于 Hostlet 的 SecretRelay，出网时替换 Authorization 头 |
+| **密钥不进沙箱** | 沙箱内只有 relay 占位符（`DEEPSEEK_API_KEY=whirlwind-relay`），真实凭证仅存于 Hostlet 的 SecretRelay，出网时替换 Authorization 头 |
 | **Capability Seam** | Skill / Tool / Memory 平台概念编译为 Seam 契约（Definition / Provider / Consumer），经 Renderer 注入沙箱；非原生 harness 走 MCP Gateway 兜底 |
 | **可回放** | durable WAL 事件日志：append 仅在 fsync 落盘后返回，崩溃恢复截断撕裂记录，组提交摊销 fsync 成本 |
 | **多 substrate 通信** | Hostlet ↔ SandboxAgent 链路统一抽象：TCP / Unix Domain Socket / virtio-vsock（microVM 形态）同一套 API |
 
+## Quick Start
+
 ## 快速上手
+
+```bash
+# Install (uv or pip)
+uv sync
+
+# 1. Build the image (echo is the test baseline; dsh needs a local checkout, see ADR D6)
+whirlwind image build echo
+
+# 2. Start the all-in-one runtime
+whirlwind serve --port 8410 --data-dir .whirlwind
+
+# 3. Create an agent and start a conversation
+whirlwind agent create demo --harness echo --image echo --seam fs.v1=sandbox-fs
+whirlwind session create demo
+whirlwind session send <sid> "hello" --stream   # SSE streaming events
+whirlwind session events <sid>                  # replay from any seq
+
+# 4. Session lifecycle
+whirlwind session suspend <sid>                 # data snapshot + release sandbox
+whirlwind session resume <sid>                  # restore from snapshot and resume
+whirlwind cron add <agent_id> --schedule '*/5 * * * *' --input 'check in'
+```
 
 ```bash
 # 安装（uv 或 pip）
 uv sync
 
 # 1. 构建镜像（echo 为测试基线；dsh 需本地 checkout，见 ADR D6）
-argus image build echo
+whirlwind image build echo
 
 # 2. 启动 all-in-one 运行时
-argus serve --port 8410 --data-dir .argus
+whirlwind serve --port 8410 --data-dir .whirlwind
 
 # 3. 创建 agent 并发起对话
-argus agent create demo --harness echo --image echo --seam fs.v1=sandbox-fs
-argus session create demo
-argus session send <sid> "hello" --stream   # SSE 流式返回事件
-argus session events <sid>                  # 从任意 seq 回放
+whirlwind agent create demo --harness echo --image echo --seam fs.v1=sandbox-fs
+whirlwind session create demo
+whirlwind session send <sid> "hello" --stream   # SSE 流式返回事件
+whirlwind session events <sid>                  # 从任意 seq 回放
 
 # 4. 会话生命周期
-argus session suspend <sid>                 # 数据快照 + 释放沙箱
-argus session resume <sid>                  # 快照恢复续播
-argus cron add <agent_id> --schedule '*/5 * * * *' --input 'check in'
+whirlwind session suspend <sid>                 # 数据快照 + 释放沙箱
+whirlwind session resume <sid>                  # 快照恢复续播
+whirlwind cron add <agent_id> --schedule '*/5 * * * *' --input 'check in'
 ```
 
+## Architecture Overview
+
 ## 架构一览
+
+```
+Gateway (REST + SSE + MCP)      entry layer: session/event-stream/cron/image management
+  └─ Control (SessionManager / Scheduler / WarmPool / Lifecycle)
+       └─ Hostlet (ensure / bind / turn / pause / destroy + SecretRelay)
+            └─ SandboxDriver ──→ sandbox (gVisor / process group)
+                 └─ SandboxAgent (EventTap / ControlAgent / ResourceInjector / LLM Relay)
+                      └─ Harness (dsh / echo / ...)
+```
 
 ```
 Gateway (REST + SSE + MCP)      接入层：会话/事件流/cron/镜像管理
@@ -52,6 +108,22 @@ Gateway (REST + SSE + MCP)      接入层：会话/事件流/cron/镜像管理
                  └─ SandboxAgent (EventTap / ControlAgent / ResourceInjector / LLM Relay 跳板)
                       └─ Harness (dsh / echo / ...)
 ```
+
+| Module | Responsibility |
+| --- | --- |
+| `core/` | Domain model: AgentDefinition / Version, AgentSession, SessionEvent, Sandbox, Snapshot, state machine |
+| `storage/` | Five provider interfaces (Metadata / KV / EventLog / ObjectStore / EventBus) + in-memory / WAL / directory implementations |
+| `transport/` | Transport abstraction: endpoint parsing + connect / serve for TCP / UDS / vsock |
+| `drivers/` | `SandboxDriver` interface + process / runsc (gVisor) implementations |
+| `hostlet/` | Node agent: sandbox lifecycle orchestration + SecretRelay (credential egress) |
+| `agent/` | SandboxAgent: first process inside the sandbox (stdlib asyncio HTTP, no heavy framework dependency) |
+| `harness/` | HarnessAdapter interface + echo baseline + dsh adapter (stdio JSON-RPC) |
+| `seam/` | Seam model and Renderer (AgentVersion → injection manifest) |
+| `imaging/` | ImageRegistry + LocalRegistry (building means real installation) |
+| `control/` | Session management, scheduling, warm pool (CAS claim), lifecycle |
+| `gateway/` | FastAPI: REST + SSE + MCP Gateway + CronScheduler |
+| `timer/` | Kafka-style hierarchical time wheel + cron expression parser (zero dependency) |
+| `bus/` | In-process event bus (topic fan-out, seq cursor) |
 
 | 模块 | 职责 |
 | --- | --- |
@@ -69,7 +141,18 @@ Gateway (REST + SSE + MCP)      接入层：会话/事件流/cron/镜像管理
 | `timer/` | Kafka 式层次时间轮 + cron 表达式解析（零依赖） |
 | `bus/` | 进程内事件总线（主题扇出、seq 游标） |
 
+## Sandbox Driver Matrix
+
 ## 沙箱驱动矩阵
+
+| | process (M1) | runsc / gVisor (M3) |
+| --- | --- | --- |
+| Isolation level | PROCESS (process group + env allowlist + cwd restriction) | LIGHT_VM (user-space kernel, independent trust domain) |
+| FULL snapshot (memory) | ✗ | ✓ runsc checkpoint (embedded CRIU) |
+| DATA snapshot (workspace) | ✓ merkle validation | ✓ same as left |
+| Network policy | ✗ | ✓ netstack (per-sandbox independent protocol stack) |
+| Density | HIGH | HIGH |
+| Platform | macOS / Linux | Linux only |
 
 | | process (M1) | runsc / gVisor (M3) |
 | --- | --- | --- |
@@ -80,26 +163,48 @@ Gateway (REST + SSE + MCP)      接入层：会话/事件流/cron/镜像管理
 | 密度 | HIGH | HIGH |
 | 平台 | macOS / Linux | Linux only |
 
+The runsc driver has been end-to-end validated on a real gVisor (release-20260810.0, systrap platform) across the full lifecycle: create / exec / pause / resume / checkpoint / destroy. Inside the sandbox, `uname -r` reports the Sentry kernel (`4.19.0-gvisor`) rather than the host kernel — empirical proof of isolation. Constrained containers (without `CAP_SYS_ADMIN`) automatically degrade to rootless + `--network=none`; restore is not yet supported in rootless mode (runsc upstream limitation), full-capability hosts can use it.
+
 runsc driver 已在真实 gVisor（release-20260810.0, systrap 平台）上全生命周期验证：create / exec / pause / resume / checkpoint / destroy，沙箱内 `uname -r` 报告 Sentry 内核（`4.19.0-gvisor`）而非宿主内核——隔离声明实证。受限容器（无 `CAP_SYS_ADMIN`）自动降级 rootless + `--network=none`；restore 在 rootless 模式暂不支持（runsc 上游限制），全能力宿主可用。
 
+## Transport Layer
+
 ## 传输层
+
+The link between the Hostlet and the SandboxAgent is expressed with a unified `Endpoint` abstraction:
 
 Hostlet 与 SandboxAgent 之间的链路用统一的 `Endpoint` 抽象表达：
 
 ```
-tcp://127.0.0.1:8000          # M1 默认（同机回环）
-unix:///run/argus/agent.sock   # 同机 UDS（无端口占用）
-http+vsock://2:8000            # microVM 形态（CID 2 = 宿主）
+tcp://127.0.0.1:8000            # M1 default (same-machine loopback)
+unix:///run/whirlwind/agent.sock  # same-machine UDS (no port usage)
+http+vsock://2:8000            # microVM form (CID 2 = host)
 ```
 
+`vsock_available()` probes `/dev/vsock`; real virtio-vsock only exists on VM platforms (Firecracker / QEMU), so tests are skipped when unavailable.
+
 `vsock_available()` 探测 `/dev/vsock`；真实 virtio-vsock 需要 VM 平台（Firecracker / QEMU）才存在，测试按可用性跳过。
+
+## Testing
 
 ## 测试
 
 ```bash
+uv run python -m pytest tests -q -m "not e2e"    # full suite (currently 139 passed, 5 skipped)
+uv run python -m pytest tests/integration/test_runsc_driver.py -q   # real gVisor sandbox
+WHIRLWIND_E2E=1 uv run python -m pytest tests/e2e -q  # real DeepSeek API (requires key)
+```
+
+Note: the `139 passed / 5 skipped` counts above are from the Argus-era run of the test suite and are historical; they are kept as-is and reflect the state at that time.
+
+说明：以上 `139 passed / 5 skipped` 为本测试套件在 Argus 时代运行的计数，属历史数据，原样保留。
+
+```bash
 uv run python -m pytest tests -q -m "not e2e"    # 全量（当前 139 passed, 5 skipped）
 uv run python -m pytest tests/integration/test_runsc_driver.py -q   # 真实 gVisor 沙箱
-ARGUS_E2E=1 uv run python -m pytest tests/e2e -q  # 真实 DeepSeek API（需密钥）
+WHIRLWIND_E2E=1 uv run python -m pytest tests/e2e -q  # 真实 DeepSeek API（需密钥）
 ```
+
+Test strategy (ADR §6): **no mocking / faking / cheating** — integration tests run real subprocesses, real filesystems, and real local HTTP; runsc tests are skipped without the binary rather than stubbed. Benchmarks include the ADR acceptance lines: cold-start p50 ≤ 250ms, event log group-commit burst ≥ 5k/s, time wheel 10k schedules, bus fan-out 20k/s.
 
 测试策略（ADR §6）：**禁止 mock / 伪造 / 作弊**——集成测试跑真实子进程、真实文件系统、真实本地 HTTP；runsc 测试在无二进制时跳过而非打桩。benchmark 含 ADR 验收线：冷启动 p50 ≤ 250ms、事件日志组提交突发 ≥ 5k/s、时间轮 10k 调度、总线扇出 20k/s。

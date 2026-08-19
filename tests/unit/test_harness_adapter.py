@@ -11,9 +11,9 @@ import json
 
 import pytest
 
-from argus.core import AgentVersion, HarnessError, SeamBindingDecl, SeamConsumerDecl, SkillRef
-from argus.harness.adapter import DshAdapter, EchoAdapter, _yaml_dump, default_registry
-from argus.seam.model import SeamRenderer
+from whirlwind.core import AgentVersion, HarnessError, SeamBindingDecl, SeamConsumerDecl, SkillRef
+from whirlwind.harness.adapter import DshAdapter, EchoAdapter, _yaml_dump, default_registry
+from whirlwind.seam.model import SeamRenderer
 
 WS = "/srv/sandbox/ws"
 
@@ -59,7 +59,7 @@ def test_dsh_adapter_renders_spine_and_native_seams() -> None:
         _decl("memory.v1", "workspace-memory"),
     ]
     prepared = DshAdapter().prepare(_manifest(_version("dsh", seams)))
-    cordis = prepared.files[".argus/cordis.yml"]
+    cordis = prepared.files[".whirlwind/cordis.yml"]
     # spine is always present
     for name in (
         "@deepseek-ai/dsh-sdk-jsonrpc-server",
@@ -74,12 +74,12 @@ def test_dsh_adapter_renders_spine_and_native_seams() -> None:
     assert "@deepseek-ai/dsh-bash-local" in cordis
     assert "@deepseek-ai/dsh-fs-local" in cordis
     # memory is a provisioned dir, not a component
-    assert f"{WS}/.argus/memory" in prepared.files[".argus/provisioned-dirs"]
+    assert f"{WS}/.whirlwind/memory" in prepared.files[".whirlwind/provisioned-dirs"]
     # env points the runtime at the rendered config
-    assert prepared.env["DSH_CORDIS_CONFIG"] == f"{WS}/.argus/cordis.yml"
-    assert prepared.env["DSH_SESSION_ROOT"] == f"{WS}/.argus/sessions"
+    assert prepared.env["DSH_CORDIS_CONFIG"] == f"{WS}/.whirlwind/cordis.yml"
+    assert prepared.env["DSH_SESSION_ROOT"] == f"{WS}/.whirlwind/sessions"
     assert prepared.env["DSH_CWD"] == WS
-    assert prepared.session_root == f"{WS}/.argus/sessions"
+    assert prepared.session_root == f"{WS}/.whirlwind/sessions"
     assert "DEEPSEEK_BASE_URL" not in prepared.env  # no relay declared
 
 
@@ -94,9 +94,9 @@ def test_dsh_adapter_injects_adopt_or_create_shim() -> None:
     not collided with a fresh same-id live session (the stock sdk-jsonrpc-server
     has no resume path of its own)."""
     prepared = DshAdapter().prepare(_manifest(_version("dsh", [])))
-    cordis = prepared.files[".argus/cordis.yml"]
-    assert "name: './argus-resume-shim.mjs'" in cordis
-    shim = prepared.files[".argus/argus-resume-shim.mjs"]
+    cordis = prepared.files[".whirlwind/cordis.yml"]
+    assert "name: './whirlwind-resume-shim.mjs'" in cordis
+    shim = prepared.files[".whirlwind/whirlwind-resume-shim.mjs"]
     assert "export const inject = ['agents', 'sessionPersistence']" in shim
     assert "registry.resume" in shim
     # adopt decision comes from the persisted log, never a control-plane flag:
@@ -107,9 +107,9 @@ def test_dsh_adapter_injects_adopt_or_create_shim() -> None:
 def test_dsh_adapter_mounts_skills_component() -> None:
     skills = [SkillRef(name="pdf-tools", version="1.2.0")]
     prepared = DshAdapter().prepare(_manifest(_version("dsh", []), skills=[(skills[0], "/stage/pdf-tools")]))
-    cordis = prepared.files[".argus/cordis.yml"]
+    cordis = prepared.files[".whirlwind/cordis.yml"]
     assert "@deepseek-ai/dsh-skill-filesystem" in cordis
-    assert f"- {WS}/.argus/skills" in cordis
+    assert f"- {WS}/.whirlwind/skills" in cordis
     assert "includeDefaultRoots: false" in cordis
 
 
@@ -128,8 +128,8 @@ def test_dsh_adapter_skips_mcp_only_bindings() -> None:
         )
     ]
     prepared = DshAdapter().prepare(_manifest(_version("dsh", seams)))
-    assert "@deepseek-ai/dsh-bash-local" not in prepared.files[".argus/cordis.yml"]
-    assert "relay-web" not in prepared.files[".argus/cordis.yml"]
+    assert "@deepseek-ai/dsh-bash-local" not in prepared.files[".whirlwind/cordis.yml"]
+    assert "relay-web" not in prepared.files[".whirlwind/cordis.yml"]
 
 
 def test_rendered_cordis_is_parseable_yaml() -> None:
@@ -140,12 +140,12 @@ def test_rendered_cordis_is_parseable_yaml() -> None:
     seams = [_decl("shell.v1", "sandbox-bash")]
     skills = [SkillRef(name="s", version="1")]
     prepared = DshAdapter().prepare(_manifest(_version("dsh", seams), skills=[(skills[0], "/x")]))
-    doc = yaml.safe_load(prepared.files[".argus/cordis.yml"])
+    doc = yaml.safe_load(prepared.files[".whirlwind/cordis.yml"])
     assert isinstance(doc, list)
     by_id = {c["id"]: c for c in doc}
-    assert by_id["skills"]["config"]["customSkillDirs"] == [f"{WS}/.argus/skills"]
+    assert by_id["skills"]["config"]["customSkillDirs"] == [f"{WS}/.whirlwind/skills"]
     assert by_id["skills"]["config"]["includeDefaultRoots"] is False
-    assert by_id["sessions"]["config"]["root"] == f"{WS}/.argus/sessions"
+    assert by_id["sessions"]["config"]["root"] == f"{WS}/.whirlwind/sessions"
 
 
 def test_registry_resolves_and_fails_closed() -> None:

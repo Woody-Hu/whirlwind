@@ -2,7 +2,7 @@
 
 import asyncio
 
-from argus.bus import InProcessEventBus
+from whirlwind.bus import InProcessEventBus
 
 
 async def test_exact_topic_fanout():

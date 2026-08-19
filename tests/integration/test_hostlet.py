@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from argus.bus import InProcessEventBus
-from argus.core import (
+from whirlwind.bus import InProcessEventBus
+from whirlwind.core import (
     AgentDefinition,
     AgentSession,
     AgentVersion,
@@ -28,13 +28,13 @@ from argus.core import (
     new_session_id,
     new_version_id,
 )
-from argus.drivers import ProcessDriver
-from argus.harness.adapter import default_registry
-from argus.hostlet import Hostlet, HostletConfig
-from argus.imaging import LocalRegistry, echo_image_build
-from argus.seam.model import SeamRenderer
-from argus.storage.wal_eventlog import WALEventLog
-from argus.storage.memory import MemoryMetadataStore
+from whirlwind.drivers import ProcessDriver
+from whirlwind.harness.adapter import default_registry
+from whirlwind.hostlet import Hostlet, HostletConfig
+from whirlwind.imaging import LocalRegistry, echo_image_build
+from whirlwind.seam.model import SeamRenderer
+from whirlwind.storage.wal_eventlog import WALEventLog
+from whirlwind.storage.memory import MemoryMetadataStore
 from tests.integration.conftest import API_KEY_SENTINEL
 
 # llm_upstream fixture: shared, see tests/integration/conftest.py
@@ -85,7 +85,7 @@ async def test_ensure_turn_events_relay_destroy(
         bus=bus,
         config=HostletConfig(
             data_dir=tmp_path,
-            api_key_env="ARGUS_TEST_KEY",
+            api_key_env="WHIRLWIND_TEST_KEY",
             llm_upstream=llm_upstream,
         ),
     )
@@ -111,7 +111,7 @@ async def test_ensure_turn_events_relay_destroy(
         # -- sandbox active + bound; workspace carries the plan, never the key
         assert sandbox.status == SandboxStatus.ACTIVE
         assert session.bound_sandbox_id == sandbox.id
-        runtime_json = (Path(sandbox.workspace) / ".argus" / "runtime.json").read_text()
+        runtime_json = (Path(sandbox.workspace) / ".whirlwind" / "runtime.json").read_text()
         assert API_KEY_SENTINEL not in runtime_json
         assert "/relay/llm" in runtime_json  # harness egress points at the agent relay
         for file in Path(sandbox.workspace).rglob("*"):
@@ -186,7 +186,7 @@ async def test_skills_are_staged_into_workspace(
 
         sandbox = await hostlet.ensure(session, version)
         try:
-            staged = Path(sandbox.workspace) / ".argus" / "skills" / "pdf-tools" / "SKILL.md"
+            staged = Path(sandbox.workspace) / ".whirlwind" / "skills" / "pdf-tools" / "SKILL.md"
             assert staged.is_file()
             assert "PDF tools" in staged.read_text()
         finally:
@@ -217,7 +217,7 @@ async def test_suspend_snapshot_then_restore_workspace_and_turn(
         bus=bus,
         config=HostletConfig(
             data_dir=tmp_path,
-            api_key_env="ARGUS_TEST_KEY",
+            api_key_env="WHIRLWIND_TEST_KEY",
             llm_upstream=llm_upstream,
         ),
     )

@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-import argus.agent.server as agent
-from argus.transport import connect, parse_url, serve, vsock_available
+import whirlwind.agent.server as agent
+from whirlwind.transport import connect, parse_url, serve, vsock_available
 
 VSOCK_PRESENT = vsock_available()
 
@@ -131,7 +131,7 @@ async def test_agent_server_serves_over_uds(tmp_path: Path) -> None:
 async def test_vsock_transport_roundtrip() -> None:
     import socket
 
-    from argus.transport.transports import VMADDR_CID_HOST
+    from whirlwind.transport.transports import VMADDR_CID_HOST
 
     async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         assert await reader.read(64) == b"ping"

@@ -1,6 +1,6 @@
 """Harness wire protocol integration tests: real echo-harness subprocess over stdio.
 
-No mocks: every test spawns `python -m argus.harness.echo_server` as a real
+No mocks: every test spawns `python -m whirlwind.harness.echo_server` as a real
 child process and speaks the dsh-shaped JSON-RPC subset through HarnessRpc.
 """
 
@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from argus.harness.protocol import (
+from whirlwind.harness.protocol import (
     HarnessNotification,
     HarnessProtocolError,
     HarnessRpc,
@@ -46,7 +46,7 @@ async def _spawn_echo(env: dict[str, str] | None = None) -> HarnessRpc:
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "argus.harness.echo_server",
+        "whirlwind.harness.echo_server",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -183,7 +183,7 @@ async def test_shell_tool_roundtrip_runs_real_command() -> None:
         rpc.on_notification(recorder)
         await rpc.request(
             "session/prompt",
-            {"sessionId": "s-tool", "contentBlocks": content_blocks("/run echo argus-$((20+3))")},
+            {"sessionId": "s-tool", "contentBlocks": content_blocks("/run echo whirlwind-$((20+3))")},
         )
         await _drain_turn(recorder, "s-tool")
         events = [
@@ -196,7 +196,7 @@ async def test_shell_tool_roundtrip_runs_real_command() -> None:
         assert tool_calls[0].data["seam"] == "shell.v1"
         assert len(tool_results) == 1
         assert tool_results[0].data["exit_code"] == 0
-        assert "argus-23" in tool_results[0].data["output"]
+        assert "whirlwind-23" in tool_results[0].data["output"]
     finally:
         await rpc.close()
 

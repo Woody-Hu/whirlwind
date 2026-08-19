@@ -1,7 +1,7 @@
-"""CLI integration: the real `argus` command against a real `argus serve` process.
+"""CLI integration: the real `whirlwind` command against a real `whirlwind serve` process.
 
 Everything is a subprocess: the server boots via the console entrypoint
-(`python -m argus.cli serve`), the client commands hit it over HTTP, and the
+(`python -m whirlwind.cli serve`), the client commands hit it over HTTP, and the
 echo sandbox + LLM relay run for real (local upstream fixture).
 """
 
@@ -31,7 +31,7 @@ async def _run_cli(*args: str, env_extra: dict[str, str] | None = None, timeout_
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "argus.cli",
+        "whirlwind.cli",
         *args,
         cwd=str(REPO_ROOT),
         env=env,
@@ -39,18 +39,18 @@ async def _run_cli(*args: str, env_extra: dict[str, str] | None = None, timeout_
         stderr=asyncio.subprocess.PIPE,
     )
     out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    assert proc.returncode == 0, f"argus {' '.join(args)} failed:\n{err.decode()}"
+    assert proc.returncode == 0, f"whirlwind {' '.join(args)} failed:\n{err.decode()}"
     return out.decode()
 
 
 @pytest.fixture
 async def server(tmp_path: Path, llm_upstream: str) -> str:
     port = _free_port()
-    env = dict(os.environ)  # inherits ARGUS_TEST_KEY sentinel set by the llm_upstream fixture
+    env = dict(os.environ)  # inherits WHIRLWIND_TEST_KEY sentinel set by the llm_upstream fixture
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "argus.cli",
+        "whirlwind.cli",
         "serve",
         "--port",
         str(port),
@@ -59,7 +59,7 @@ async def server(tmp_path: Path, llm_upstream: str) -> str:
         "--repo-root",
         str(REPO_ROOT),
         "--api-key-env",
-        "ARGUS_TEST_KEY",
+        "WHIRLWIND_TEST_KEY",
         "--llm-upstream",
         llm_upstream,
         cwd=str(REPO_ROOT),
@@ -93,7 +93,7 @@ async def server(tmp_path: Path, llm_upstream: str) -> str:
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)  # the echo image build is a real pip venv install
 async def test_cli_full_flow(server: str) -> None:
-    env = {"ARGUS_URL": server}
+    env = {"WHIRLWIND_URL": server}
 
     # image -> agent -> session -> streamed turn -> durable events
     assert "ref" in await _run_cli("image", "build", "echo", env_extra=env, timeout_s=300)
