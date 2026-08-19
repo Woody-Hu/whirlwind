@@ -1,6 +1,5 @@
 # Whirlwind Agent Runtime
 
-# Whirlwind Agent Runtime（智能体运行时）
 
 A harness-agnostic, sandboxed agent runtime. It treats any agent harness (DeepSeek Harness / dsh, echo, or a custom loop) as a black-box process placed inside a managed sandbox. The platform uniformly handles session routing, sandbox scheduling, snapshot restore, pool prewarming, event streaming, and capability injection.
 
