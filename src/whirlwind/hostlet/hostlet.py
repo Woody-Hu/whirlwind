@@ -414,7 +414,7 @@ class Hostlet:
                     return
             except httpx.HTTPError:
                 pass
-            await asyncio.sleep(0.02)  # tight poll: boot latency shows up directly in dispatch p50
+            await asyncio.sleep(0.005)  # tight poll: boot latency shows up directly in dispatch p50
         raise HostletError(f"sandbox agent did not become healthy within {self.config.agent_boot_timeout_s}s")
 
     # -------------------------------------------------------- control face

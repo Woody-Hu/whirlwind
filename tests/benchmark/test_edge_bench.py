@@ -202,7 +202,8 @@ async def test_cold_start_with_resource_limits(
         await store.create_version(version)
 
         durations: list[float] = []
-        for _ in range(5):
+        # 10 rounds: same rationale as test_pipeline_bench.test_cold_start_decision
+        for _ in range(10):
             session = AgentSession(id=new_session_id(), agent_id=agent.id, agent_version_id=version.id)
             await store.create_session(session)
             start = time.perf_counter()
