@@ -148,6 +148,27 @@ whirlwind/
 - 自造轮子前先查成熟库（ADR-0003 的教训与原则）；自研组件（时间轮、WAL）需独立封装、独立测试。
 - 包管理用 `uv`（`uv sync`）；测试一律经 runner 执行（§4.4-4.5），交互式调试才直跑 `uv run python -m pytest ...`。
 
+### 3.4 平台能力分支（Platform capabilities）
+
+一口统一"当前跑在什么系统上、该走哪套实现"的跨切能力，载体是 [core/platform.py](src/whirlwind/core/platform.py)，**详细决策见 [ADR-0007](docs/adr/0007-platform-abstraction.md)（D1–D4）**。本分支是横切 core 模块，位于所有消费方（drivers / transport / imaging / tests）之下，不改变架构分层与 harness 可见面。
+
+能力清单与设计决策对应关系：
+
+| 能力 | 形态 | ADR-0007 决策 |
+| --- | --- | --- |
+| 统一平台事实 | `PlatformFacts` 冻结值对象：`system` (`macos`/`linux`/`windows`/`unknown`) / `machine` (`arm64`/`x86_64`/原样) / `vsock` / `restricted`；派生语义 `rlimit_as_supported` / `uds_path_max` / `overridden` | D1 |
+| 当前环境配置 | 环境变量 `WHIRLWIND_PLATFORM=auto\|macos\|linux\|windows[/machine]`；`current_facts()` 在真实探测上叠加身份覆盖；非法值抛 `ValueError` | D2 |
+| 平台行为插件 | `@platform_impl(feature, platform)` 注册 + `resolve_impl(feature)` 按当前 system 键分发，`"*"` 为兜底实现；未注册抛稳定错误码 `whirlwind/platform/impl-not-found` | D3 |
+| 迁移收编点 | process rlimits、vsock 探测、imaging 平台标签、测试门控（process/edge/runsc）已从裸 `sys.platform` 迁到 facts/插件 | D4 |
+
+**诚实边界（§4.2 的落地，不可绕过）**：`WHIRLWIND_PLATFORM` 只覆盖**身份**与派生语义；探测类事实（`vsock`、`restricted`）永远反映真实宿主——覆盖不能伪造设备/二进制/内核执行，所以模拟 `linux` 无法让缺失的 `/dev/vsock` 或 runsc 底座变绿。真实执行类测试仍按真实探测门控（`shutil.which`、`/dev/vsock`）。
+
+当前已注册的行为插件 feature（生产侧导入即接线）：
+
+- `drivers.process.rlimits`：`"*"` = POSIX 全量（RLIMIT_AS / RLIMIT_CPU / RLIMIT_NPROC）；`"macos"` = 诚实剔除 `RLIMIT_AS`（macOS 内核拒绝 soft=hard，ADR-0005 D1 的透明化）。策略在父进程 (`create`) 解析、`preexec_fn` 只应用预计算计划（fork/exec 间不做探测，异步信号安全）。
+
+平台差异化设计约束见 [ADR-0001](docs/adr/0001-agent-runtime-m1.md)（driver 接缝/能力位如实上报）与 [ADR-0005](docs/adr/0005-edge-hardening.md)（资源上限诚实注记）；VM 级底座 [microsandbox](docs/adr/0006-microsandbox-driver.md)（ADR-0006，`Isolation.LIGHT_VM`，libkrun/krunkit）同样走 `SandboxDriver` 接口而与平台层解耦。
+
 ---
 
 ## 4. 测试规范

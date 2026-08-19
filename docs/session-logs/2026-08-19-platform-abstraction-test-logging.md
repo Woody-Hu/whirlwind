@@ -57,3 +57,4 @@
 - 后续可选（未排期）：CI 中用 runner 的 junitxml 产出报告构件；`scripts/run_tests.py` 目前无 `--lf`/`-x` 直通参数（需要时直接 pytest 调试即可）。
 - microsandbox（ADR-0006）状态不变：设计定稿待实施（见 2026-08-19-microsandbox-platform.md）。
 - 给下一个 session：测试一律 `uv run python scripts/run_tests.py ...`（§4.5）；平台相关判断禁止裸 `sys.platform`（§3.3）。
+- 追加（同日，第二笔提交）：AGENTS.md 新增 **§3.4 平台能力分支**——以能力清单表讲清 PlatformFacts / WHIRLWIND_PLATFORM / 插件分发 / 迁移收编点，并逐项引用 ADR-0007 D1–D4 与 ADR-0001/0005/0006 约束；测试门控迁移的 `test_transport.py` 相关说明已在 §2 索引呈现。
