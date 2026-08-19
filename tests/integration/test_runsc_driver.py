@@ -25,6 +25,7 @@ from whirlwind.drivers import (
     DriverError,
     ExecSpec,
     Isolation,
+    Resources,
     RunscDriver,
     SandboxSpec,
 )
@@ -121,6 +122,28 @@ def test_render_oci_config_rejects_launcher_outside_bundle(tmp_path: Path) -> No
     bundle = tmp_path / "bundle"
     with pytest.raises(DriverError):
         _in_rootfs(bundle, "/usr/bin/python")  # outside the bundle root
+
+
+def test_render_oci_config_threads_resources(tmp_path: Path) -> None:
+    """Resources become rlimits (always) + cgroup resources for mem/pids
+    (ADR-0005 D1); no limits configured → config identical to before."""
+    from whirlwind.drivers.runsc import _render_oci_config
+
+    spec = _spec(tmp_path, "sbx_res")
+    spec.resources = Resources(mem_limit_mb=256, cpu_seconds=10, pids_max=64)
+    config = _render_oci_config(spec.bundle_root, spec)
+
+    limits = {r["type"]: r for r in config["process"]["rlimits"]}
+    assert limits["RLIMIT_AS"] == {"type": "RLIMIT_AS", "hard": 256 * 1024 * 1024, "soft": 256 * 1024 * 1024}
+    assert limits["RLIMIT_CPU"] == {"type": "RLIMIT_CPU", "hard": 10, "soft": 10}
+    assert limits["RLIMIT_NPROC"] == {"type": "RLIMIT_NPROC", "hard": 64, "soft": 64}
+    assert config["linux"]["resources"]["memory"] == {"limit": 256 * 1024 * 1024}
+    assert config["linux"]["resources"]["pids"] == {"limit": 64}
+
+    # no limits → no resource section, only the baseline NOFILE rlimit
+    plain = _render_oci_config(_spec(tmp_path, "sbx_plain").bundle_root, _spec(tmp_path, "sbx_plain"))
+    assert "resources" not in plain["linux"]
+    assert [r["type"] for r in plain["process"]["rlimits"]] == ["RLIMIT_NOFILE"]
 
 
 async def test_missing_binary_reports_driver_error(tmp_path: Path) -> None:

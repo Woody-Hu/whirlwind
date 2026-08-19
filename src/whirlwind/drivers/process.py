@@ -5,6 +5,7 @@ Isolation boundary, truthfully reported as `Isolation.PROCESS`:
 - cwd pinned to the sandbox-private workspace; the only directory we create
 - env is a strict whitelist (spec.env only — the host environment does not
   leak into the sandbox), secrets never enter this env (they live in Hostlet)
+- resource ceilings via POSIX rlimits applied between fork and exec (ADR-0005 D1)
 
 Data snapshots are real workspace copies with a content-hash merkle root;
 `snapshot_full` is declared and enforced as unsupported.
@@ -15,9 +16,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import resource
 import shutil
 import signal
 import time
+from functools import partial
 from pathlib import Path
 
 from whirlwind.core import SnapshotKind, new_snapshot_id
@@ -30,6 +33,7 @@ from .base import (
     ExecSpec,
     Instance,
     Isolation,
+    Resources,
     SandboxDriver,
     SandboxNotFound,
     SandboxSpec,
@@ -111,6 +115,9 @@ class ProcessDriver(SandboxDriver):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # own process group (POSIX: Linux + macOS)
+                preexec_fn=partial(_apply_rlimits, spec.resources)
+                if spec.resources != Resources()
+                else None,
             )
         except OSError as exc:
             raise DriverError(f"failed to launch sandbox: {exc}") from exc
@@ -194,6 +201,29 @@ class ProcessDriver(SandboxDriver):
                 _signal_group(instance, signal.SIGKILL)
                 await proc.wait()
         self._instances.pop(sandbox_id, None)
+
+
+def _apply_rlimits(res: Resources):
+    """preexec_fn body: set spec.resources as POSIX rlimits before exec.
+
+    Runs in the forked child between fork and exec (single-threaded there),
+    which is the only correct place to apply per-process limits.
+    """
+
+    def set_limit(which: int, soft: int, hard: int) -> None:
+        try:
+            resource.setrlimit(which, (soft, hard))
+        except (ValueError, OSError) as exc:  # e.g. above the kernel hard cap
+            raise DriverError(f"cannot apply rlimit {which}: {exc}") from exc
+
+    if res.mem_limit_mb is not None:
+        as_bytes = res.mem_limit_mb * 1024 * 1024
+        set_limit(resource.RLIMIT_AS, as_bytes, as_bytes)
+    if res.cpu_seconds is not None:
+        # soft triggers SIGXCPU, hard kills — equal means no grace period
+        set_limit(resource.RLIMIT_CPU, res.cpu_seconds, res.cpu_seconds)
+    if res.pids_max is not None:
+        set_limit(resource.RLIMIT_NPROC, res.pids_max, res.pids_max)
 
 
 def _signal_group(instance: Instance, sig: signal.Signals) -> None:

@@ -8,6 +8,7 @@ from .base import (
     ExecSpec,
     Instance,
     Isolation,
+    Resources,
     SandboxDriver,
     SandboxNotFound,
     SandboxSpec,
@@ -19,6 +20,6 @@ from .runsc import RunscDriver
 
 __all__ = [
     "Caps", "Density", "DriverError", "ExecResult", "ExecSpec", "Instance",
-    "Isolation", "SandboxDriver", "SandboxNotFound", "SandboxSpec",
+    "Isolation", "Resources", "SandboxDriver", "SandboxNotFound", "SandboxSpec",
     "SnapshotArtifact", "UnsupportedCapability", "ProcessDriver", "RunscDriver",
 ]

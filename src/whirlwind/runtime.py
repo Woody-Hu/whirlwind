@@ -16,7 +16,7 @@ from typing import Any, NoReturn
 
 from whirlwind.bus import InProcessEventBus
 from whirlwind.control import LifecycleManager, SessionManager, WarmPool, WarmPoolConfig
-from whirlwind.drivers import ProcessDriver
+from whirlwind.drivers import ProcessDriver, Resources
 from whirlwind.gateway.app import GatewayDeps, create_app
 from whirlwind.gateway.cron import CronScheduler
 from whirlwind.gateway.mcp import McpGateway, WorkspaceToolExecutor
@@ -41,6 +41,7 @@ class RuntimeConfig:
     postgres_dsn: str | None = None
     kv_backend: str = "memory"  # "memory" | "redis" (ADR-0004 D4)
     redis_url: str | None = None
+    sandbox_resources: Resources | None = None  # per-sandbox ceilings (ADR-0005 D1)
 
     def resolved_repo_root(self) -> Path:
         if self.repo_root is not None:
@@ -115,6 +116,7 @@ class WhirlwindRuntime:
                 data_dir=data_dir,
                 api_key_env=config.api_key_env,
                 llm_upstream=config.llm_upstream,
+                sandbox_resources=config.sandbox_resources,
             ),
         )
 

@@ -57,6 +57,22 @@ class Caps:
     density: Density
 
 
+@dataclass(frozen=True, slots=True)
+class Resources:
+    """Per-sandbox resource ceilings (ADR-0005 D1). None = unlimited.
+
+    Fields map to mechanisms BOTH drivers truthfully enforce (rlimits for
+    the process driver; OCI rlimits + cgroup resources for runsc). Known
+    honesty caveats: mem caps *virtual* memory; pids is a fork-time check
+    against the uid's total process count; CPU *rate* limiting needs the
+    cgroup cpu controller and is deliberately not claimed here.
+    """
+
+    mem_limit_mb: int | None = None
+    cpu_seconds: int | None = None
+    pids_max: int | None = None
+
+
 @dataclass(slots=True)
 class SandboxSpec:
     """A fully-resolved launch request. `env` is a whitelist — nothing else
@@ -68,6 +84,7 @@ class SandboxSpec:
     workspace: Path            # sandbox-private cwd; the only writable area
     env: dict[str, str] = field(default_factory=dict)
     pool_id: str = "default"
+    resources: Resources = field(default_factory=Resources)
 
 
 @dataclass(slots=True)
