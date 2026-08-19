@@ -14,9 +14,10 @@ unmappable native seams fail closed.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Protocol
+
+import yaml
 
 from whirlwind.core import HarnessError
 from whirlwind.seam.model import InjectionManifest, SeamBinding
@@ -141,7 +142,7 @@ class DshAdapter(HarnessAdapter):
             env["DEEPSEEK_BASE_URL"] = manifest.llm_relay_url
             env["DEEPSEEK_API_KEY"] = "whirlwind-relay"
         files = {
-            ".whirlwind/cordis.yml": _yaml_dump(components),
+            ".whirlwind/cordis.yml": yaml.safe_dump(components, sort_keys=False, default_flow_style=False),
             ".whirlwind/whirlwind-resume-shim.mjs": DSH_RESUME_SHIM_MJS,
             ".whirlwind/provisioned-dirs": "\n".join(provisioned_dirs) + "\n",
         }
@@ -202,49 +203,3 @@ def default_registry() -> AdapterRegistry:
     registry.register(EchoAdapter())
     registry.register(DshAdapter())
     return registry
-
-
-# --------------------------------------------------------------- yaml (subset)
-
-def _yaml_dump(value: object, indent: int = 0) -> str:
-    """Deterministic YAML for the cordis component structure (lists of scalar
-    dicts). No external dependency; anything else raises rather than guessing."""
-    pad = "  " * indent
-    if isinstance(value, list):
-        if not value:
-            return "[]"
-        chunks = []
-        for item in value:
-            chunks.append(f"{pad}- " + _yaml_dump(item, indent + 1).lstrip())
-        return "\n".join(chunks)
-    if isinstance(value, dict):
-        if not value:
-            return "{}"
-        lines = []
-        for key, item in value.items():
-            if isinstance(item, (dict, list)) and item:
-                lines.append(f"{pad}{key}:")
-                lines.append(_yaml_dump(item, indent + 1))
-            else:
-                lines.append(f"{pad}{key}: {_yaml_scalar(item)}")
-        return "\n".join(lines)
-    return _yaml_scalar(value)
-
-
-_SAFE_SCALAR = re.compile(r"^[/A-Za-z0-9_][/A-Za-z0-9_./ -]*$")
-
-
-def _yaml_scalar(value: object) -> str:
-    if value is None:
-        return "null"
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    if isinstance(value, str):
-        if _SAFE_SCALAR.fullmatch(value) and not value.endswith(" ") and ": " not in value:
-            return value
-        return "'" + value.replace("'", "''") + "'"
-    if isinstance(value, (int, float)):
-        return str(value)
-    raise TypeError(f"cannot serialize {type(value).__name__} to cordis yaml")

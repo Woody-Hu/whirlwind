@@ -17,8 +17,8 @@ Replaces hand-rolled cron/YAML with mature libraries and lands the first real da
 
 以成熟库替换自实现的 cron/YAML，并在既有 `storage.providers` 接缝后落地首批真实数据库 provider（ADR-0003 / ADR-0004）。零接口变更；默认后端保持进程内实现（无破坏）。
 
-- [~] P0.1 `timer/cron.py`: delegate to `croniter` (5-field contract, strictness and `?` alias preserved; name/macros accepted as a compatible extension) — ADR-0003 D1
-- [ ] P0.2 `harness/adapter.py`: render `cordis.yml` with `PyYAML` (`safe_dump`, deterministic key order) — ADR-0003 D2
+- [x] P0.1 `timer/cron.py`: delegate to `croniter` (5-field contract, strictness and `?` alias preserved; month/dow English names accepted as a compatible extension) — ADR-0003 D1
+- [x] P0.2 `harness/adapter.py`: render `cordis.yml` with `PyYAML` (`safe_dump`, deterministic key order) — ADR-0003 D2
 - [ ] P0.3 `storage/postgres.py`: `PostgresMetadataStore` (asyncpg pool + JSONB docs + typed key columns; semantics parity pinned by a shared contract suite; restart-survival test) — ADR-0004 D1
 - [ ] P0.4 `storage/redis.py`: `RedisKVStore` (Lua CAS) + `RedisLocks` (token-checked release); cross-instance CAS test against real Redis — ADR-0004 D2
 - [ ] P0.5 Runtime backend selection: `RuntimeConfig.metadata_backend/kv_backend` + `whirlwind serve` flags; extras `whirlwind[postgres]` / `whirlwind[redis]` — ADR-0004 D3

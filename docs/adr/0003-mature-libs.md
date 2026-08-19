@@ -32,14 +32,14 @@ M1 对两个叶子工具选择了零依赖自实现：5 字段 cron 解析器（
 - **5 字段契约保留**：包装层先拒绝非 5 字段表达式再委托（croniter 本身还接受 Quartz 6 字段；系统 cron 面保持 5 字段）。
 - **`?` → `*` normalization stays in the wrapper**, so the documented cloud-cron dialect keeps working regardless of upstream behavior.
 - **`?` → `*` 归一化留在包装层**，文档化的云 cron 方言不依赖上游行为。
-- **Compatible extension (not a break)**: croniter accepts English names (`MON`, `JAN`) and macros (`@hourly`) that the old parser rejected; previously-invalid-now-valid input is a relaxation, no previously-valid input changes meaning. Strict rejection of out-of-range values (`60 * * * *`), reversed ranges (`5-1`), zero steps (`*/0`) is preserved.
-- **兼容性扩展（非破坏）**：croniter 接受旧解析器拒绝的英文名（`MON`、`JAN`）与宏（`@hourly`）；「先前非法、现在合法」是放宽，先前合法输入语义不变。对越界值（`60 * * * *`）、倒序区间（`5-1`）、零步长（`*/0`）的严格拒绝保留。
+- **Compatible extension (not a break)**: croniter accepts English names in the month / day-of-week fields (`MON-FRI`, `JAN`) that the old parser rejected; previously-invalid-now-valid input is a relaxation, no previously-valid input changes meaning. Strict rejection of out-of-range values (`60 * * * *`), reversed numeric ranges (`5-1` — croniter alone is lenient here, the wrapper keeps rejecting), zero steps (`*/0`), Quartz 6-field syntax, and `@` macros is preserved.
+- **兼容性扩展（非破坏）**：croniter 接受旧解析器拒绝的月份 / 星期字段英文名（`MON-FRI`、`JAN`）；「先前非法、现在合法」是放宽，先前合法输入语义不变。对越界值（`60 * * * *`）、倒序数字区间（`5-1`——croniter 单独使用时是宽容的，包装层保持拒绝）、零步长（`*/0`）、Quartz 6 字段语法与 `@` 宏的严格拒绝保留。
 - **Dropped internals**: `minute/hour/dom/month/dow` frozensets, `describe()`, `days_in_month()` have no callers outside the old implementation and tests; they are removed with the rewrite (the old public API surface — `parse`/`next_after`/`CronParseError` — is what callers use).
 - **删除的内部项**：`minute/hour/dom/month/dow` frozenset、`describe()`、`days_in_month()` 除旧实现与测试外无调用方，随重写删除（调用方使用的旧公开 API 面是 `parse`/`next_after`/`CronParseError`）。
 
-**Test impact**: existing vectors (every-minute, step/list, range, DOW 0/7, dom-dow OR semantics, parse errors, `?` alias) are kept verbatim as the parity contract; a names/macros capability test is added.
+**Test impact**: existing vectors (every-minute, step/list, range, DOW 0/7, dom-dow OR semantics, parse errors, `?` alias) are kept verbatim as the parity contract; names-in-dow/month capability and non-5-field dialect rejection tests are added.
 
-**测试影响**：既有用例（每分钟、步长/列表、区间、DOW 0/7、dom-dow OR 语义、解析错误、`?` 别名）原样保留作为语义契约；新增名字/宏能力用例。
+**测试影响**：既有用例（每分钟、步长/列表、区间、DOW 0/7、dom-dow OR 语义、解析错误、`?` 别名）原样保留作为语义契约；新增月份/星期名字能力与非 5 字段方言拒绝用例。
 
 ## D2 YAML subset → PyYAML
 
