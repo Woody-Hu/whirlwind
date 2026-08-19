@@ -163,7 +163,7 @@ class TestLiveApply:
 
     NS = "whirlwind"
 
-    @pytest.fixture(autouse=True)
+    @pytest.fixture(autouse=True, scope="class")
     def apply_manifest(self) -> None:
         import time
 
