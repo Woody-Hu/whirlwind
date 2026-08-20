@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -28,9 +29,13 @@ from whirlwind.core.events import Surface
 class WALEventLog:
     """Append-only WAL event log. Owns per-session seq assignment (EventLog)."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, on_append: Callable[[], None] | None = None) -> None:
         self._root = root.resolve()
         self._root.mkdir(parents=True, exist_ok=True)
+        # observability hook (ADR-0013): fired after a durable commit; wired by
+        # the composition root to bump the append counter. Optional + sync so
+        # the hot append path pays only a bare function call.
+        self._on_append = on_append
         self._files: dict[str, tuple[Any, int]] = {}  # session_id -> (handle, last_seq)
         self._seq_locks: dict[str, asyncio.Lock] = {}
         self._write_lock = asyncio.Lock()
@@ -165,6 +170,8 @@ class WALEventLog:
                 waiter = self._enqueue(handle, event.model_dump_json() + "\n")
                 self._files[session_id] = (handle, last + 1)
         await waiter  # durability: returns only after the group fsync
+        if self._on_append is not None:
+            self._on_append()
         return event
 
     async def read(self, session_id: str, from_seq: int = 0, limit: int = 1000) -> list[SessionEvent]:

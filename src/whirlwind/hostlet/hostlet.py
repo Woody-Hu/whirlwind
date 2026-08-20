@@ -169,6 +169,11 @@ class Hostlet:
         return f"http://127.0.0.1:{self._port}"
 
     @property
+    def population(self) -> int:
+        """Live sandboxes currently owned by this hostlet (observability gauge)."""
+        return len(self._sandboxes)
+
+    @property
     def _port(self) -> int:
         assert self._server is not None
         sockets = self._server.servers[0].sockets  # type: ignore[index]

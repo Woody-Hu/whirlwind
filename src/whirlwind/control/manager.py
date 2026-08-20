@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from whirlwind.bus import InProcessEventBus
 from whirlwind.core import (
@@ -26,6 +27,7 @@ from whirlwind.core import (
 from whirlwind.core.errors import Conflict, InvalidTransition, NotFound, QuotaExceeded
 from whirlwind.core.statemachine import SESSION_TRANSITIONS, check_transition
 from whirlwind.hostlet import Hostlet
+from whirlwind.observability.collector import MetricsCollector
 from whirlwind.storage.providers import MetadataStore
 
 from .lifecycle import LifecycleManager
@@ -45,6 +47,7 @@ class SessionManager:
         lifecycle: LifecycleManager,
         pool: WarmPool | None = None,
         max_live_sessions: int | None = None,
+        metrics: MetricsCollector | None = None,
     ) -> None:
         self.store = store
         self.hostlet = hostlet
@@ -52,6 +55,7 @@ class SessionManager:
         self.lifecycle = lifecycle
         self.pool = pool
         self.max_live_sessions = max_live_sessions  # admission gate (ADR-0005 D2); None = uncapped
+        self.metrics = metrics  # observability: turn latency/error counters (ADR-0013 P2.3)
         self._dispatch_locks: dict[str, asyncio.Lock] = {}
         self._admission_lock = asyncio.Lock()
         lifecycle.on_expire(self._on_expire)
@@ -126,7 +130,15 @@ class SessionManager:
             else:
                 raise Conflict(f"session {session_id} is {session.status}; create a new session")
         self.lifecycle.cancel_idle_timeout(session.id)
-        message_id = await self.hostlet.turn(sandbox.id, text, content_blocks)
+        start = time.monotonic()
+        try:
+            message_id = await self.hostlet.turn(sandbox.id, text, content_blocks)
+        except Exception:
+            if self.metrics is not None:
+                self.metrics.record_turn(time.monotonic() - start, error=True)
+            raise
+        if self.metrics is not None:
+            self.metrics.record_turn(time.monotonic() - start)
         return {"message_id": message_id, "sandbox_id": sandbox.id}
 
     async def close_session(self, session_id: str) -> AgentSession:

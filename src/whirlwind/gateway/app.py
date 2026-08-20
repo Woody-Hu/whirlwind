@@ -22,7 +22,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from whirlwind.control.manager import SessionManager
@@ -51,6 +51,8 @@ from whirlwind.gateway.idempotency import IdempotencyMiddleware
 from whirlwind.gateway.mcp import McpGateway
 from whirlwind.harness.bundles import HarnessBundles
 from whirlwind.imaging import ImageRegistry, dsh_image_build, echo_image_build
+from whirlwind.observability.collector import MetricsCollector
+from whirlwind.observability.middleware import MetricsMiddleware, route_template
 from whirlwind.seam.catalog import SeamCatalog
 from whirlwind.seam.model import SeamRenderer
 from whirlwind.secrets import SecretBox, SecretBoxError, SecretNameError, validate_env_names
@@ -83,6 +85,10 @@ class GatewayDeps:
     # bundles/instances without wiring are rejected at request time.
     seam_catalog: SeamCatalog | None = None
     bundles: HarnessBundles | None = None
+    # observability (ADR-0013): when present, the gateway exposes /metrics and
+    # times every request through it. Optional so minimal test assemblies stay
+    # valid and observability is a deployment choice, not a hard dependency.
+    metrics: MetricsCollector | None = None
 
 
 # ------------------------------------------------------------- request models
@@ -175,6 +181,19 @@ def create_app(
     app = FastAPI(title="whirlwind-gateway", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     if deps.kv is not None:
         app.add_middleware(IdempotencyMiddleware, kv=deps.kv)
+    if deps.metrics is not None:
+        # Timing wrapper + /metrics exposes the Prometheus text face (ADR-0013
+        # P2.3). Resolver closes over `app` to re-match each request to a
+        # bounded route template.
+        resolver = lambda scope: route_template(app, scope)  # noqa: E731
+        app.add_middleware(MetricsMiddleware, collector=deps.metrics, route_resolver=resolver)
+
+        @app.get("/metrics")
+        async def metrics() -> PlainTextResponse:
+            return PlainTextResponse(
+                await deps.metrics.render_async(),
+                media_type="text/plain; version=0.0.4",
+            )
 
     @app.exception_handler(WhirlwindError)
     async def _whirlwind_error(_: Request, exc: WhirlwindError) -> JSONResponse:

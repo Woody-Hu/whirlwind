@@ -16,6 +16,7 @@ from typing import Any, NoReturn
 
 from whirlwind.bus import InProcessEventBus
 from whirlwind.control import LifecycleManager, SessionManager, WarmPool, WarmPoolConfig
+from whirlwind.core.model import SessionStatus
 from whirlwind.drivers import ProcessDriver, Resources
 from whirlwind.gateway.app import GatewayDeps, create_app
 from whirlwind.gateway.cron import CronScheduler
@@ -24,6 +25,7 @@ from whirlwind.harness.adapter import default_registry
 from whirlwind.harness.bundles import HarnessBundles
 from whirlwind.hostlet import Hostlet, HostletConfig
 from whirlwind.imaging import LocalRegistry
+from whirlwind.observability.collector import MetricsCollector
 from whirlwind.seam.catalog import SeamCatalog
 from whirlwind.seam.model import SeamRenderer
 from whirlwind.secrets import SecretBox
@@ -160,10 +162,15 @@ class WhirlwindRuntime:
         data_dir = config.data_dir
         data_dir.mkdir(parents=True, exist_ok=True)
 
+        # observability (ADR-0013 P2.1): one process-wide collector, wired into
+        # the gateway (/metrics + request timing), the manager (turn latency),
+        # and sampled from the store/hostlet (session status + sandbox count).
+        self.metrics = MetricsCollector()
+
         # storage & comms providers
         self.store = _build_metadata_store(config)
         self.kv = _build_kv_store(config)
-        self.event_log = WALEventLog(data_dir / "events")
+        self.event_log = WALEventLog(data_dir / "events", on_append=self.metrics.record_wal_append)
         self.bus = InProcessEventBus()
 
         # agent-env secrets (ADR-0010): one box (key from env, dev fallback file),
@@ -216,6 +223,20 @@ class WhirlwindRuntime:
         self.manager = SessionManager(
             self.store, self.hostlet, self.bus, self.lifecycle,
             pool=self.pool, max_live_sessions=config.max_live_sessions,
+            metrics=self.metrics,
+        )
+
+        # Source-of-truth samplers: pulled at /metrics render time so gauges
+        # heal across restarts instead of trusting incremental deltas.
+        async def _sample_sessions() -> None:
+            counts: dict[SessionStatus, int] = {}
+            for s in await self.store.list_sessions():
+                counts[s.status] = counts.get(s.status, 0) + 1
+            self.metrics.sample_sessions(counts)
+
+        self.metrics.add_async_sampler(_sample_sessions)
+        self.metrics.add_sampler(
+            lambda: self.metrics.sample_sandbox_population(self.hostlet.population)
         )
 
         # gateway faces
@@ -241,6 +262,7 @@ class WhirlwindRuntime:
                 secret_store=self.secrets,
                 seam_catalog=self.seam_catalog,
                 bundles=self.bundles,
+                metrics=self.metrics,
             ),
             on_startup=self.start,
             on_shutdown=self.stop,
