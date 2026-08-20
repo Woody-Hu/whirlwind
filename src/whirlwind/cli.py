@@ -119,14 +119,27 @@ def cmd_agent_create(args: argparse.Namespace) -> None:
                 _die(f"--env {name}: not set in the local environment")
             value = os.environ[name]
         env[name] = value
+    # ADR-0011 D4: with --harness-bundle the gateway derives harness/image_ref
+    # from the bundle; explicit flags stay optional (must agree or 422).
     version_payload: dict[str, Any] = {
         "version": args.agent_version,
-        "harness": args.harness,
-        "image_ref": args.image,
         "seam_bindings": seam_bindings,
         "skill_refs": skills,
         "model_config_decl": model,
     }
+    if args.harness_bundle:
+        version_payload["harness_bundle"] = args.harness_bundle
+        if args.harness:
+            version_payload["harness"] = args.harness
+        if args.image:
+            version_payload["image_ref"] = args.image
+    else:
+        if not (args.harness and args.image):
+            _die("--harness and --image are required (or pass --harness-bundle)")
+        version_payload["harness"] = args.harness
+        version_payload["image_ref"] = args.image
+    if args.seam_instance:
+        version_payload["seam_instances"] = args.seam_instance
     if env:
         version_payload["env"] = env
     payload = {"name": args.name, "version": version_payload}
@@ -273,11 +286,15 @@ def build_parser() -> argparse.ArgumentParser:
     agent_sub = agent.add_subparsers(dest="agent_command", required=True)
     create = agent_sub.add_parser("create")
     create.add_argument("name")
-    create.add_argument("--harness", required=True)
-    create.add_argument("--image", required=True)
+    create.add_argument("--harness", default=None, help="harness adapter id (required without --harness-bundle)")
+    create.add_argument("--image", default=None, help="image ref (required without --harness-bundle)")
+    create.add_argument("--harness-bundle", default=None,
+                        help="named harness bundle (ADR-0011); supplies harness/image_ref when given")
     create.add_argument("--agent-version", default="1.0.0")
     create.add_argument("--model", action="append", help="model_config_decl entry key=value (repeatable)")
     create.add_argument("--seam", action="append", help="seam=provider binding (repeatable)")
+    create.add_argument("--seam-instance", action="append",
+                        help="named seam instance to bind (repeatable, ADR-0011)")
     create.add_argument("--skill", action="append", help="name=version skill ref (repeatable)")
     create.add_argument(
         "--env",

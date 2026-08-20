@@ -119,6 +119,11 @@ async def test_cli_full_flow(server: str) -> None:
     listed = await _run_cli("agent", "list", env_extra=env)
     assert "cli-agent" in listed
 
+    # ADR-0011 D4: bundle-bound creation — no --harness/--image needed, the
+    # gateway derives them from the named bundle (builtin echo fallback)
+    bundled = await _run_cli("agent", "create", "cli-bundled", "--harness-bundle", "echo", env_extra=env)
+    assert '"harness": "echo"' in bundled and '"harness_bundle": "echo"' in bundled
+
     session_id = (await _run_cli("session", "create", "cli-agent", env_extra=env)).strip()
     assert session_id.startswith("ses_")
 

@@ -112,6 +112,31 @@ async def test_skill_persistence_roundtrip(metadata_store, tmp_path):
     assert await metadata_store.skill_path(SkillRef(name="demo", version="9.9")) is None
 
 
+async def test_metadata_catalog_docs_contract(metadata_store):
+    """ADR-0011 D6: the generic catalog quadruple behaves identically on every
+    backend — upsert-by-name, list, delete, unknown-kind rejected."""
+    doc = {"name": "workspace-fs", "seam": "fs.v1", "params": [{"name": "mode"}]}
+    await metadata_store.put_catalog_doc("seam_template", doc)
+    await metadata_store.put_catalog_doc("seam_template", {"name": "bash"})
+    # upsert by (kind, name) replaces the whole doc
+    doc["params"].append({"name": "label"})
+    await metadata_store.put_catalog_doc("seam_template", doc)
+    got = await metadata_store.get_catalog_doc("seam_template", "workspace-fs")
+    assert got == doc
+    assert await metadata_store.get_catalog_doc("seam_template", "missing") is None
+    names = sorted(d["name"] for d in await metadata_store.list_catalog_docs("seam_template"))
+    assert names == ["bash", "workspace-fs"]
+    # kinds are isolated tables
+    await metadata_store.put_catalog_doc("seam_instance", {"name": "bash", "template": "bash"})
+    assert await metadata_store.list_catalog_docs("seam_instance") == [{"name": "bash", "template": "bash"}]
+    # delete is idempotent-tolerant (missing name is a no-op)
+    await metadata_store.delete_catalog_doc("seam_template", "bash")
+    assert await metadata_store.get_catalog_doc("seam_template", "bash") is None
+    await metadata_store.delete_catalog_doc("seam_template", "bash")
+    with pytest.raises(NotFound):
+        await metadata_store.put_catalog_doc("nope_kind", {"name": "x"})
+
+
 # --------------------------------------------- PostgreSQL-specific proof
 
 async def test_postgres_metadata_survives_restart(postgres_dsn, tmp_path):

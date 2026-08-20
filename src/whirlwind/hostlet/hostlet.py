@@ -44,7 +44,9 @@ from whirlwind.core import (
 from whirlwind.core.errors import WhirlwindError, Conflict, NotFound
 from whirlwind.drivers import Resources, SandboxDriver, SandboxSpec, SnapshotArtifact
 from whirlwind.harness.adapter import AdapterRegistry
+from whirlwind.harness.bundles import HarnessBundles
 from whirlwind.imaging import ImageRegistry
+from whirlwind.seam.catalog import SeamCatalog
 from whirlwind.seam.model import SeamRenderer
 from whirlwind.secrets import SecretBox, SecretBoxError
 from whirlwind.storage.providers import EventBus, EventLog, MetadataStore, SecretStore
@@ -108,6 +110,8 @@ class Hostlet:
         config: HostletConfig,
         secrets: SecretStore | None = None,
         secret_box: SecretBox | None = None,
+        seam_catalog: SeamCatalog | None = None,
+        bundles: HarnessBundles | None = None,
     ) -> None:
         self.driver = driver
         self.images = images
@@ -121,6 +125,11 @@ class Hostlet:
         # ensure() fails closed when a version declares secrets but these are absent.
         self._secrets = secrets
         self._secret_box = secret_box
+        # ADR-0011 D4/D5: live reference resolution at provision time. Absent
+        # wiring is legal (versions without references never touch these);
+        # a version WITH references and no wiring fails closed in ensure().
+        self._seam_catalog = seam_catalog
+        self._bundles = bundles
         self._sandboxes: dict[str, _ManagedSandbox] = {}
         self._api_key = os.environ.get(config.api_key_env, "")
         self._server: uvicorn.Server | None = None
@@ -174,6 +183,7 @@ class Hostlet:
         """Provision + boot a sandbox. `session=None` provisions a WARM
         (unbound, pre-booted) sandbox for the pool; otherwise binds directly."""
         sandbox_id = new_sandbox_id()
+        version, harness_bundle_env = await self._resolve_version(version)
         bundle = await self.images.resolve(version.image_ref)
         adapter = self.adapters.adapter_for(version.harness)
         if from_snapshot is not None and from_snapshot.manifest.get("workspace"):
@@ -219,10 +229,13 @@ class Hostlet:
             target.write_text(content)
         (workspace / ".whirlwind" / "manifest.json").write_text(manifest.model_dump_json())
 
-        # D5 precedence: bundle.env < user secrets < prepared.env — adapter
-        # wiring (DSH_*, ECHO_*) always wins, so even a hostile name that
-        # slipped past validation cannot clobber the platform's own injection.
+        # D5 precedence: image env < harness-bundle env < user secrets <
+        # prepared.env — adapter wiring (DSH_*, ECHO_*) always wins, so even a
+        # hostile name that slipped past validation cannot clobber the
+        # platform's own injection (bundle overlays are image-level defaults,
+        # ADR-0011 D5; secrets never ride this path).
         harness_env = dict(bundle.env)
+        harness_env.update(harness_bundle_env)
         harness_env.update(await self._resolve_env_secrets(version))
         harness_env.update(prepared.env)
         harness_env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -403,6 +416,44 @@ class Hostlet:
             return self._sandboxes[sandbox_id]
         except KeyError:
             raise NotFound(f"hostlet does not manage sandbox {sandbox_id}") from None
+
+    async def _resolve_version(self, version: AgentVersion) -> tuple[AgentVersion, dict[str, str]]:
+        """Materialize the effective version at provision time (ADR-0011 D4/D5).
+
+        Both reference kinds are LIVE (ConfigMap semantics — resolved here, not
+        at version creation): the current harness bundle supplies
+        harness/image/entrypoint defaults plus an env overlay, and the current
+        seam instances materialize into inline decls (merged with any legacy
+        inline bindings, dedup-checked by the catalog). Versions without
+        references pass through untouched; versions with references but no
+        wiring fail closed — a sandbox must never boot on unresolved
+        declarations. The renderer downstream stays pure and synchronous.
+        """
+        bundle_env: dict[str, str] = {}
+        if version.harness_bundle:
+            if self._bundles is None:
+                raise HostletError(
+                    f"version {version.id} binds harness bundle {version.harness_bundle!r} "
+                    "but the hostlet has no bundle catalog wired"
+                )
+            harness_bundle = await self._bundles.resolve(version.harness_bundle)
+            version = version.model_copy(
+                update={
+                    "harness": harness_bundle.harness,
+                    "image_ref": harness_bundle.image_ref,
+                    "entrypoint": version.entrypoint or harness_bundle.entrypoint,
+                }
+            )
+            bundle_env = dict(harness_bundle.env)
+        if version.seam_instances:
+            if self._seam_catalog is None:
+                raise HostletError(
+                    f"version {version.id} references seam instances {version.seam_instances} "
+                    "but the hostlet has no seam catalog wired"
+                )
+            decls = await self._seam_catalog.resolve_version_bindings(version)
+            version = version.model_copy(update={"seam_bindings": decls})
+        return version, bundle_env
 
     async def _resolve_env_secrets(self, version: AgentVersion) -> dict[str, str]:
         """Decrypt the version's env secrets for injection (ADR-0010 D5).

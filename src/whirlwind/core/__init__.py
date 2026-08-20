@@ -15,7 +15,17 @@ pay the ~50-150ms pydantic import on every sandbox start.
 
 from importlib import import_module
 
-from .errors import WhirlwindError, InvalidTransition, NotFound, Conflict, QuotaExceeded, SeamError, HarnessError
+from .errors import (
+    WhirlwindError,
+    InvalidTransition,
+    NotFound,
+    Conflict,
+    QuotaExceeded,
+    SeamError,
+    HarnessError,
+    BadRequest,
+    Unprocessable,
+)
 from .ids import new_agent_id, new_version_id, new_session_id, new_sandbox_id, new_snapshot_id, new_cron_id, new_team_id
 from .platform import (
     ENV_PLATFORM,
@@ -62,6 +72,7 @@ _LAZY_EXPORTS: dict[str, str] = {
 
 __all__ = [
     "WhirlwindError", "InvalidTransition", "NotFound", "Conflict", "QuotaExceeded", "SeamError", "HarnessError",
+    "BadRequest", "Unprocessable",
     "new_agent_id", "new_version_id", "new_session_id", "new_sandbox_id", "new_snapshot_id",
     "new_cron_id", "new_team_id",
     "SessionEvent", "Surface", "SurfaceOp", "EventKind",

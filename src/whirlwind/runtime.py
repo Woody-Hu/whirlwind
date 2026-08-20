@@ -21,8 +21,10 @@ from whirlwind.gateway.app import GatewayDeps, create_app
 from whirlwind.gateway.cron import CronScheduler
 from whirlwind.gateway.mcp import McpGateway, WorkspaceToolExecutor
 from whirlwind.harness.adapter import default_registry
+from whirlwind.harness.bundles import HarnessBundles
 from whirlwind.hostlet import Hostlet, HostletConfig
 from whirlwind.imaging import LocalRegistry
+from whirlwind.seam.catalog import SeamCatalog
 from whirlwind.seam.model import SeamRenderer
 from whirlwind.secrets import SecretBox
 from whirlwind.storage.local import LocalFileSecretStore
@@ -110,6 +112,12 @@ class WhirlwindRuntime:
         self.secret_box = SecretBox.from_env_or_file(config.secret_key_env, data_dir)
         self.secrets = LocalFileSecretStore(data_dir)
 
+        # catalog faces (ADR-0011): seam templates/instances + harness bundles
+        # over the SAME metadata store — one wiring, consumed by hostlet
+        # (provision-time resolution) and gateway (CRUD + admission checks).
+        self.seam_catalog = SeamCatalog(self.store)
+        self.bundles = HarnessBundles(self.store)
+
         # timer + imaging + data plane
         self.wheel = HierarchicalTimer(tick_ms=config.wheel_tick_ms)
         self.images = LocalRegistry(data_dir / "images")
@@ -123,6 +131,8 @@ class WhirlwindRuntime:
             bus=self.bus,
             secrets=self.secrets,
             secret_box=self.secret_box,
+            seam_catalog=self.seam_catalog,
+            bundles=self.bundles,
             config=HostletConfig(
                 data_dir=data_dir,
                 api_key_env=config.api_key_env,
@@ -160,6 +170,8 @@ class WhirlwindRuntime:
                 kv=self.kv,
                 secret_box=self.secret_box,
                 secret_store=self.secrets,
+                seam_catalog=self.seam_catalog,
+                bundles=self.bundles,
             ),
             on_startup=self.start,
             on_shutdown=self.stop,
