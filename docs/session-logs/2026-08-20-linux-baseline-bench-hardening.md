@@ -40,3 +40,13 @@
 - runsc/k3s 在本容器不可用（无二进制/无控制面）；后续 session 若提供内核级环境可复测（安装脚本见后续 session）。
 - 冷启动剖析剩余大头：agent 子进程 asyncio 导入 ~75ms（业务必需，按用户原则不做懒加载）；如需再压，可考虑 fork 预热或解释器级手段，属未来调优项。
 - PG/Redis 的可复现安装脚本将随「依赖安装脚本」session 落盘（本 session 是手动 apt）。
+
+## 附：跨平台插件设计审视（用户任务 2 的判断部分，2026-08-20 Loop D）
+
+基于 Linux 全量结果对 ADR-0007 设计做了一次审计，**结论：设计清晰且够用，无需优化**。证据：
+
+1. **零违规**：`sys.platform` / `platform.machine()` 全仓库只出现在 `core/platform.py` 内部（即抽象本身的合法位置）；业务代码无一处裸判断（grep 验证）。
+2. **消费方模式统一且轻**：三种消费形态各司其职——事实读取（`transports.vsock_available()`、`imaging._platform_tag()`）、派生语义（`rlimit_as_supported` / `uds_path_max`，单测覆盖 macos/linux 双身份）、行为插件（`drivers.process.rlimits`：`"*"` POSIX 全量 + `"macos"` 诚实剔除 RLIMIT_AS；策略在父进程解析、preexec_fn 只应用预计算计划，fork/exec 间异步信号安全）。
+3. **诚实边界在 Linux 受限容器被真实验证**：无 runsc 二进制/无 `/dev/vsock` ⇒ 12 个 skip 全部带理由；`restricted` 事实驱动 runsc rootless 降级路径；`rlimit_as_supported` 门控冷启动基准的 limits 档——模拟身份（`WHIRLWIND_PLATFORM`）没有让任何缺失底座变绿。
+4. **Linux 复测未暴露任何平台插件缺陷**：唯一发现（导入成本）与平台层正交，已按懒加载原则修复。
+5. 插件注册表当前只有 1 个 feature（`drivers.process.rlimits`）——这是诚实采用节奏而非设计缺陷：vsock 探测/镜像平台标签/测试门控本质是**事实读取**而非**行为分派**，归类为 facts 消费方是正确的（ADR-0007 D4 的迁移清单即如此划分）。
