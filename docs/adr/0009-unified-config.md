@@ -92,11 +92,16 @@ snapshot_chain_max = 16       # delta chain compaction bound (≥1; full snapsho
 # mem_limit_mb = 512
 # cpu_seconds = 3600
 # pids_max = 256
+
+[logging]                     # structured logging (ADR-0013 D2)
+level = "INFO"                # DEBUG | INFO | WARNING | ERROR | CRITICAL
+format = "json"               # "json" | "text" — single-line JSON vs plain text
+environment = "unknown"       # frozen tag injected into every JSON record
 ```
 
-**English.** The loader (`src/whirlwind/config.py`) produces a frozen `Settings(server=…, runtime=RuntimeConfig, config_path=…)`; `RuntimeConfig` remains THE composition-root dataclass with **no signature change** — existing tests and embedders (k3s, e2e) keep constructing it directly. Unknown sections/keys are a hard error (typos must fail loudly, not silently no-op). Type validation happens at load; failures raise `ConfigError` (`whirlwind/config`) per the error-code contract.
+**English.** The loader (`src/whirlwind/config.py`) produces a frozen `Settings(server=…, runtime=RuntimeConfig, config_path=…, logging=…)`; `RuntimeConfig` remains THE composition-root dataclass with **no signature change** — existing tests and embedders (k3s, e2e) keep constructing it directly. Unknown sections/keys are a hard error (typos must fail loudly, not silently no-op). Type validation happens at load; failures raise `ConfigError` (`whirlwind/config`) per the error-code contract.
 
-**中文.** loader（`src/whirlwind/config.py`）产出冻结的 `Settings(server=…, runtime=RuntimeConfig, config_path=…)`；`RuntimeConfig` 仍是组合根 dataclass，**签名不变**——既有测试与嵌入方（k3s、e2e）继续直接构造。未知分区/键是硬错误（拼写错误必须响亮失败，而非静默无效）。加载时做类型校验，失败抛 `ConfigError`（`whirlwind/config`），遵守错误码契约。
+**中文.** loader（`src/whirlwind/config.py`）产出冻结的 `Settings(server=…, runtime=RuntimeConfig, config_path=…, logging=…)`；`RuntimeConfig` 仍是组合根 dataclass，**签名不变**——既有测试与嵌入方（k3s、e2e）继续直接构造。未知分区/键是硬错误（拼写错误必须响亮失败，而非静默无效）。加载时做类型校验，失败抛 `ConfigError`（`whirlwind/config`），遵守错误码契约。
 
 ## Decision — D5: env overrides — flat `WHIRLWIND_*` names
 
