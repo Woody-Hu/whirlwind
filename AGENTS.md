@@ -34,7 +34,7 @@ Gateway (REST + SSE + MCP)          接入层：会话 / 事件流 / cron / 镜�
 
 ### 1.3 演进状态
 
-- **已落地**：M1 单进程竖切（process driver、echo/dsh adapter、Seam renderer、REST+SSE+MCP、CLI）；M2 全生命周期（suspend/resume、warm 池 CAS、时间轮 cron）；M3 部分（runsc driver 真实 gVisor 全生命周期验证、TCP/UDS/vsock 传输、durable WAL EventLog）；P0（croniter/PyYAML 成熟库、PostgreSQL/Redis provider）；P1 除 auth 外（资源限制、会话配额、幂等键、k3s 部署）；平台抽象（ADR-0007：PlatformFacts + platform_impl 行为插件）与测试运行器（ADR-0008：日志落盘 + 控制台简要结论）。
+- **已落地**：M1 单进程竖切（process driver、echo/dsh adapter、Seam renderer、REST+SSE+MCP、CLI）；M2 全生命周期（suspend/resume、warm 池 CAS、时间轮 cron）；M3 部分（runsc driver 真实 gVisor 全生命周期验证、TCP/UDS/vsock 传输、durable WAL EventLog）；P0（croniter/PyYAML 成熟库、PostgreSQL/Redis provider）；P1 除 auth 外（资源限制、会话配额、幂等键、k3s 部署、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011、delta 快照 + 底座钉选 ADR-0012）；平台抽象（ADR-0007：PlatformFacts + platform_impl 行为插件）与测试运行器（ADR-0008：日志落盘 + 控制台简要结论）。
 - **已定稿待实施**：microsandbox（libkrun/krunkit）第三 VM 底座（[ADR-0006](docs/adr/0006-microsandbox-driver.md)，`Isolation.LIGHT_VM`）——填补 Apple Silicon 的 VM 级测试覆盖空洞。
 - **进行中/待办**：见 [docs/TODO.md](docs/TODO.md)（活文档，随每个自闭环变更增量维护）。
 
@@ -61,7 +61,9 @@ whirlwind/
 │   │   ├── 0007-platform-abstraction.md # 平台抽象：PlatformFacts + WHIRLWIND_PLATFORM + 行为插件
 │   │   ├── 0008-test-logging.md         # 测试执行日志：runner 落盘 + junit 摘要 + 简要结论
 │   │   ├── 0009-unified-config.md       # 统一配置：单一 TOML + 分层注入（file < env < CLI）
-│   │   └── 0010-agent-env-secrets.md    # Agent env 密钥：引用/值分离、pynacl 信封、供给期注入
+│   │   ├── 0010-agent-env-secrets.md    # Agent env 密钥：引用/值分离、pynacl 信封、供给期注入
+│   │   ├── 0011-seam-templates-and-harness-bundles.md  # Seam 模板/实例 + Harness 组合 + Agent 绑定模型
+│   │   └── 0012-delta-snapshots-and-substrate-pinning.md  # Delta 快照（overlay 链 + 压实）+ sandbox.driver 底座钉选
 │   ├── TODO.md                      # 演进路线活文档（P0~P4 优先级分层）
 │   ├── session-logs/                # 开发 session 记录（见 §5.3，按日期归档）
 │   └── memory/                      # 项目记忆（见 §6，长上下文 handoff 载体）
@@ -86,8 +88,8 @@ whirlwind/
 │   ├── transport/                   # 传输抽象：endpoints.py 解析 + transports.py connect/serve（tcp/unix/vsock）
 │   ├── hostlet/                     # 节点代理：沙箱生命周期编排 + SecretRelay（凭证出网替换）
 │   ├── agent/                       # SandboxAgent：沙箱内首进程（stdlib asyncio HTTP，无重框架）
-│   ├── harness/                     # HarnessAdapter 接口 + echo 基线 + dsh adapter（stdio JSON-RPC）+ protocol.py
-│   ├── seam/                        # Seam 契约模型（SeamDefinition / ProviderSpec / SeamBinding / InjectionManifest）与 Renderer
+│   ├── harness/                     # HarnessAdapter 接口 + echo 基线 + dsh adapter（stdio JSON-RPC）+ protocol.py + bundles.py（HarnessBundle 组合，ADR-0011）
+│   ├── seam/                        # Seam 契约模型（SeamDefinition / ProviderSpec / SeamBinding / InjectionManifest）与 Renderer + catalog.py（模板/实例目录，ADR-0011）
 │   ├── imaging/                     # ImageRegistry 接口 + LocalRegistry（构建即真实安装）
 │   ├── control/                     # 控制面：manager（会话）/ scheduler（调度）/ pool（warm 池 CAS）/ lifecycle（ensure_* 幂等步骤链）
 │   ├── gateway/                     # FastAPI：REST + SSE + MCP Gateway + cron.py + idempotency.py
@@ -263,7 +265,7 @@ ADR 需覆盖的设计维度（按需取舍，至少明确其一）：
 
 ### 5.2 ADR 写作规范
 
-- 位置 `docs/adr/`，命名 `NNNN-<slug>.md`，编号连续递增（下一个是 0011）。
+- 位置 `docs/adr/`，命名 `NNNN-<slug>.md`，编号连续递增（下一个是 0013）。
 - 结构对齐既有 ADR（参考 [0001](docs/adr/0001-agent-runtime-m1.md)）：标题（中英）→ Status / Date / Related / Scope → 背景与目标 → **Key Decisions（编号 D1/D2/…）** → 详细设计 → 测试策略 → 与架构文档的冲突检查 → 实施顺序 → 风险与开放点。
 - 决策必须**编号**（D1/D2/…），后续变更通过在新 ADR 中引用旧编号来修订（如 `→ Delivered (M3)`、superseded by），不回写抹除历史。
 - 与架构文档（v0.6）的偏差必须显式记录并给理由（ADR-0001 D2 是范例）。

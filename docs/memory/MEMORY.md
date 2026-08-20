@@ -5,12 +5,13 @@
 ## 快照
 
 - 系统形态：harness 无感的沙箱化 agent 运行时；单进程 all-in-one（M1 竖切）→ 多 substrate 演进中。
-- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider + 统一配置）已完成；P1 除 auth/tenancy 外完成（资源限制、配额、幂等键、k3s、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011）；平台抽象（ADR-0007）与测试运行器（ADR-0008）已落地；顶层文档已拆分为 EN / zh-CN 互链（AGENTS.md §5.5，2026-08-20）。详见 [docs/TODO.md](../TODO.md)。
-- 测试基线（2026-08-20，Linux/x86_64 容器 + 本机 PG/Redis，经 runner）：`not e2e` 全量 **314 passed / 12 skipped**（skip = runsc×4、k8s×4、vsock×1、e2e×3，容器无二进制/设备）。冷启动优化后 p50：无限制 183ms / 含 rlimits 197ms（250ms 线内，详见 session-log 2026-08-20）。macOS 基线（2026-08-19）：202 passed / 24 skipped。
+- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider + 统一配置）已完成；P1 除 auth/tenancy 外完成（资源限制、配额、幂等键、k3s、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011、delta 快照 + 底座钉选 ADR-0012）；平台抽象（ADR-0007）与测试运行器（ADR-0008）已落地；顶层文档已拆分为 EN / zh-CN 互链（AGENTS.md §5.5，2026-08-20）。详见 [docs/TODO.md](../TODO.md)。
+- 测试基线（2026-08-20，Linux/x86_64 容器 + 本机 PG/Redis，经 runner）：`not e2e` 全量 **327 passed / 12 skipped**（skip = runsc×4、k8s×4、vsock×1、e2e×3，容器无二进制/设备；327 含 ADR-0012 新增 13 项）。冷启动优化后 p50：无限制 183ms / 含 rlimits 197ms（250ms 线内，详见 session-log 2026-08-20）。macOS 基线（2026-08-19）：202 passed / 24 skipped。
 - 懒加载原则（用户约定）：只对「该路径确实不需要」的可选/误伤导入惰性化（如沙箱子进程的 pydantic、echo 的 urllib）；业务必需的加载（agent.server 的 asyncio 等）一律保持急切。
 - 统一配置（ADR-0009，AGENTS.md §3.5）：默认值只在 `config.py` loader 定义一次；优先级 代码默认 < `whirlwind.toml` < `WHIRLWIND_*` env < CLI（None 哨兵）；`whirlwind config show` 自省；密钥值永不进配置文件（只配置 env 变量名）；k3s 经 ConfigMap 挂载 TOML。新增可调值必须登记 loader schema + env 映射。
 - Agent env 密钥（ADR-0010）：名字进 `AgentVersion.env_secrets`、值以 pynacl 信封（`v1:<key_id>:<b64>`）进 `SecretStore`（本地默认后端 0600 JSON）；API 对值只写；供给期 fail-closed 解密注入（优先级 bundle < secrets < prepared）；保留名（`WHIRLWIND_*`、`DEEPSEEK_API_KEY`）拒收。主密钥 `WHIRLWIND_SECRET_KEY` env（开发兜底 `data_dir/secret.key`）；密钥轮转未实现（信封 `v1` 前缀即接缝）。
 - Seam 模板/实例 + Harness 组合（ADR-0011，2026-08-20 落地）：`SeamTemplate`（`${param}` 占位符，注册期对 renderer registry 校验）经命名 `SeamInstance` 物化为具体 decl（ConfigMap 活性：供给期解析，非创建期冻结）；`HarnessBundle` 一等镜像组合（内建 echo/dsh 兜底，store 文档可遮蔽）；`AgentVersion` 绑 0..1 bundle + 0..N 实例，内联声明兼容；网关急切准入（未知引用 4xx、显式值不一致 422、拒绝不留孤儿 agent）+ Hostlet 供给期二次解析（fail-closed）；env 优先级 image < harness-bundle < secrets < prepared；通用 catalog 接缝（MetadataStore 四元组，memory/PG 对齐）。
+- Delta 快照 + 底座钉选（ADR-0012，2026-08-20 落地）：`Caps.delta_snapshots` 能力位（process=True，runsc 诚实 False，`checkpoint(base=...)` 前置拒绝）；overlay 工件（`WHIRLWIND_DELTA.json` 索引；merkle=物化端态，全量/delta 同态同根；逐跳链校验 fail-closed）；hostlet 血缘策略 `sandbox.snapshot_mode`（默认 full，逐字节兼容）+ `snapshot_chain_max` 压实；播种统一走 `driver.materialize`（链重建只在产出 driver 一处）；`sandbox.driver` 配置钉选（指名不可用即拒绝启动，绝不静默回退）。实测：稀疏负载 delta 载荷 ~50x 缩小；链深同时抬高 checkpoint/物化成本（delta 需先物化 base 链再 diff）——`chain_max` 一次界定三端成本；块索引优化是已知后续路径（ADR-0012 风险区）。
 
 ## 进行中
 
@@ -51,3 +52,4 @@
 | 统一配置：whirlwind.toml 分层注入（file < env < CLI）、schema 强校验、config show | 0009 |
 | Agent env 密钥：引用/值分离、pynacl 信封、供给期 fail-closed 注入 | 0010 |
 | Seam 模板/实例 + Harness 组合 + Agent 绑定模型 + 通用 catalog 接缝 | 0011 |
+| Delta 快照（overlay 工件 + 链压实）+ `sandbox.driver` 底座钉选 | 0012 |

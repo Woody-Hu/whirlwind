@@ -30,6 +30,9 @@ kv_backend = "memory"         # "memory" | "redis"
 
 [sandbox]
 # max_live_sessions = 64      # admission cap (ADR-0005 D2); null = uncapped
+driver = "process"            # substrate pinning: "process" | "runsc"; named-but-missing fails boot (ADR-0012 D5)
+snapshot_mode = "full"        # "full" | "delta" (process only; validated against driver caps at boot — ADR-0012 D4)
+snapshot_chain_max = 16       # delta chain compaction bound; a full snapshot resets the chain (ADR-0012 D4)
 
 [sandbox.resources]           # per-sandbox ceilings (ADR-0005 D1); null = none
 # mem_limit_mb = 512

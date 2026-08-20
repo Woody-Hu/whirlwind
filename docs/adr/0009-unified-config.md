@@ -84,6 +84,9 @@ redis_url = null              # required when kv_backend = "redis"
 
 [sandbox]
 max_live_sessions = null      # admission cap; null = uncapped
+driver = "process"            # substrate pinning: "process" | "runsc" (ADR-0012 D5)
+snapshot_mode = "full"        # "full" | "delta" — delta validated against driver caps at boot (ADR-0012 D4/D6)
+snapshot_chain_max = 16       # delta chain compaction bound (≥1; full snapshot resets the chain)
 
 [sandbox.resources]           # per-sandbox ceilings (ADR-0005 D1)
 # mem_limit_mb = 512
@@ -99,7 +102,7 @@ max_live_sessions = null      # admission cap; null = uncapped
 
 ## 决策——D5：环境变量覆盖——扁平 `WHIRLWIND_*` 命名
 
-`WHIRLWIND_HOST`, `WHIRLWIND_PORT`, `WHIRLWIND_DATA_DIR`, `WHIRLWIND_REPO_ROOT`, `WHIRLWIND_API_KEY_ENV`, `WHIRLWIND_LLM_UPSTREAM`, `WHIRLWIND_WHEEL_TICK_MS`, `WHIRLWIND_METADATA_BACKEND`, `WHIRLWIND_POSTGRES_DSN`, `WHIRLWIND_KV_BACKEND`, `WHIRLWIND_REDIS_URL`, `WHIRLWIND_MAX_LIVE_SESSIONS`.
+`WHIRLWIND_HOST`, `WHIRLWIND_PORT`, `WHIRLWIND_DATA_DIR`, `WHIRLWIND_REPO_ROOT`, `WHIRLWIND_API_KEY_ENV`, `WHIRLWIND_LLM_UPSTREAM`, `WHIRLWIND_WHEEL_TICK_MS`, `WHIRLWIND_METADATA_BACKEND`, `WHIRLWIND_POSTGRES_DSN`, `WHIRLWIND_KV_BACKEND`, `WHIRLWIND_REDIS_URL`, `WHIRLWIND_MAX_LIVE_SESSIONS`, `WHIRLWIND_SANDBOX_DRIVER`, `WHIRLWIND_SNAPSHOT_MODE`, `WHIRLWIND_SNAPSHOT_CHAIN_MAX`.
 
 **English.** Compound values (`warm_pool`, `sandbox.resources`) are file/CLI-only — encoding dicts in env vars is hostile. Secrets themselves are never config values: only the *name* of the env var (`api_key_env`) is configured; the value stays a real environment variable read by the Hostlet (credentials never enter files — §6.2 of the architecture doc).
 
