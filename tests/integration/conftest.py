@@ -162,6 +162,21 @@ async def lock_provider(request):
         await locks.aclose()
 
 
+@pytest.fixture(params=["memory", "local"])
+async def secret_store(request, tmp_path):
+    """The SecretStore contract suite runs against every landed backend (ADR-0010 D6).
+
+    Memory and the local file store both always run — no external service.
+    """
+    from whirlwind.storage.local import LocalFileSecretStore
+    from whirlwind.storage.memory import MemorySecretStore
+
+    if request.param == "memory":
+        yield MemorySecretStore()
+        return
+    yield LocalFileSecretStore(tmp_path / "data")
+
+
 @pytest.fixture
 async def llm_upstream(monkeypatch: pytest.MonkeyPatch) -> str:
     """A real local LLM-ish HTTP service: 401 without the Bearer key, 200 with.

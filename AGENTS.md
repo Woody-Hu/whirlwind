@@ -60,7 +60,8 @@ whirlwind/
 │   │   ├── 0006-microsandbox-driver.md  # libkrun/krunkit 第三 VM 底座（定稿待实施）
 │   │   ├── 0007-platform-abstraction.md # 平台抽象：PlatformFacts + WHIRLWIND_PLATFORM + 行为插件
 │   │   ├── 0008-test-logging.md         # 测试执行日志：runner 落盘 + junit 摘要 + 简要结论
-│   │   └── 0009-unified-config.md       # 统一配置：单一 TOML + 分层注入（file < env < CLI）
+│   │   ├── 0009-unified-config.md       # 统一配置：单一 TOML + 分层注入（file < env < CLI）
+│   │   └── 0010-agent-env-secrets.md    # Agent env 密钥：引用/值分离、pynacl 信封、供给期注入
 │   ├── TODO.md                      # 演进路线活文档（P0~P4 优先级分层）
 │   ├── session-logs/                # 开发 session 记录（见 §5.3，按日期归档）
 │   └── memory/                      # 项目记忆（见 §6，长上下文 handoff 载体）
@@ -92,6 +93,7 @@ whirlwind/
 │   ├── gateway/                     # FastAPI：REST + SSE + MCP Gateway + cron.py + idempotency.py
 │   ├── timer/                       # Kafka 式层次时间轮 wheel.py + cron.py（croniter 委托）
 │   ├── bus/                         # 进程内事件总线（主题扇出、seq 游标）
+│   ├── secrets.py                   # Agent env 密钥：SecretBox 封存/解密 + 名字校验（ADR-0010，仅宿主侧导入，沙箱冷路径永不加载）
 │   ├── runtime.py                   # WhirlwindRuntime：自底向上装配 storage→hostlet→control→gateway，后端选择（metadata_backend/kv_backend）
 │   ├── config.py                    # 统一配置加载：TOML + env + CLI 分层注入，schema 强校验（ADR-0009，§3.5）
 │   └── cli.py                       # CLI 入口（whirlwind 命令；serve 经 load_settings 装配，config show 自省）
@@ -146,10 +148,11 @@ whirlwind/
 
 ### 3.3 通用编码约定
 
-- Python 3.12+ / asyncio；依赖最小化（`fastapi` / `uvicorn` / `httpx` / `pydantic` / `croniter` / `pyyaml`），新增依赖必须有 ADR 论证。
+- Python 3.12+ / asyncio；依赖最小化（`fastapi` / `uvicorn` / `httpx` / `pydantic` / `croniter` / `pyyaml` / `pynacl`），新增依赖必须有 ADR 论证（pynacl 见 ADR-0010：标准库无 AEAD，不手搓密码学）。
 - 双平台可运行（macOS M 系列 + Linux）：`pathlib` 路径、`asyncio.subprocess`，不用 Linux-only syscall；平台差异经 `core/platform` 事实 + 各层 `@platform_impl` 插件封装（见下条）。
 - **平台分支统一走 [core/platform.py](src/whirlwind/core/platform.py)（ADR-0007）**：禁止在业务代码直接判断 `sys.platform` / `platform.machine()`；事实取 `current_facts()`，行为差异用 `@platform_impl` 注册、`resolve_impl` 分发。`WHIRLWIND_PLATFORM` 环境变量（`auto|macos|linux|windows[/machine]`）仅供开发/测试模拟**身份**（派生语义随之），探测类事实（`/dev/vsock`、`CAP_SYS_ADMIN`）永不被覆盖——模拟平台不能让缺失的底座变绿（§4.2 的诚实边界）。
 - 自造轮子前先查成熟库（ADR-0003 的教训与原则）；自研组件（时间轮、WAL）需独立封装、独立测试。
+- **性能优化必须合理：懒加载只用于省掉"当前执行路径确实不需要"的导入**（如子进程启动路径不用的 pydantic、无 LLM 配置时 echo 不用的 urllib、未选中的存储后端）；业务必需的加载一律保持急加载（如 agent.server 的 asyncio、gateway 的核心模型），不为 benchmark 数字把必要成本推迟到请求路径上。冷启动优化以 ADR-0008 的基准实测为准，不许为了数字牺牲架构清晰度。
 - 包管理用 `uv`（`uv sync`）；测试一律经 runner 执行（§4.4-4.5），交互式调试才直跑 `uv run python -m pytest ...`。
 
 ### 3.4 平台能力分支（Platform capabilities）
@@ -260,7 +263,7 @@ ADR 需覆盖的设计维度（按需取舍，至少明确其一）：
 
 ### 5.2 ADR 写作规范
 
-- 位置 `docs/adr/`，命名 `NNNN-<slug>.md`，编号连续递增（下一个是 0009）。
+- 位置 `docs/adr/`，命名 `NNNN-<slug>.md`，编号连续递增（下一个是 0011）。
 - 结构对齐既有 ADR（参考 [0001](docs/adr/0001-agent-runtime-m1.md)）：标题（中英）→ Status / Date / Related / Scope → 背景与目标 → **Key Decisions（编号 D1/D2/…）** → 详细设计 → 测试策略 → 与架构文档的冲突检查 → 实施顺序 → 风险与开放点。
 - 决策必须**编号**（D1/D2/…），后续变更通过在新 ADR 中引用旧编号来修订（如 `→ Delivered (M3)`、superseded by），不回写抹除历史。
 - 与架构文档（v0.6）的偏差必须显式记录并给理由（ADR-0001 D2 是范例）。

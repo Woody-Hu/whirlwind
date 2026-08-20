@@ -34,7 +34,8 @@ from whirlwind.gateway.idempotency import IdempotencyMiddleware
 from whirlwind.gateway.mcp import McpGateway
 from whirlwind.imaging import ImageRegistry, dsh_image_build, echo_image_build
 from whirlwind.seam.model import SeamRenderer
-from whirlwind.storage.providers import EventLog, EventBus, KVStore, MetadataStore
+from whirlwind.secrets import SecretBox, SecretBoxError, SecretNameError, validate_env_names
+from whirlwind.storage.providers import EventLog, EventBus, KVStore, MetadataStore, SecretStore
 from whirlwind.timer.cron import CronExpr, CronParseError
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,11 @@ class GatewayDeps:
     repo_root: Path
     version: str = "0.1.0"
     kv: KVStore | None = None  # enables Idempotency-Key on mutating routes (ADR-0005 D3)
+    # agent-env secrets (ADR-0010): seal on version write; optional so
+    # secret-less deployments (and minimal test assemblies) stay valid —
+    # supplying `env` values without a box is rejected at request time.
+    secret_box: SecretBox | None = None
+    secret_store: SecretStore | None = None
 
 
 # ------------------------------------------------------------- request models
@@ -66,6 +72,9 @@ class VersionIn(BaseModel):
     seam_bindings: list[dict[str, Any]] = Field(default_factory=list)
     skill_refs: list[dict[str, str]] = Field(default_factory=list)
     model_config_decl: dict[str, Any] = Field(default_factory=dict)
+    # write-only surface (ADR-0010 D6): accepted at creation, sealed into the
+    # SecretStore, never echoed back — responses carry `env_secrets` names.
+    env: dict[str, str] | None = None
 
 
 class AgentIn(BaseModel):
@@ -103,6 +112,8 @@ _STATUS_BY_ERROR = {
     QuotaExceeded: 429,
     SeamError: 400,
     BadRequest: 400,
+    SecretNameError: 400,
+    SecretBoxError: 500,
 }
 
 
@@ -196,6 +207,9 @@ def create_app(
     async def create_agent(payload: AgentIn) -> dict[str, Any]:
         if await deps.store.get_agent_by_name(payload.name) is not None:
             raise Conflict(f"agent {payload.name!r} already exists")
+        # validate BEFORE the agent record exists: a rejected payload must not
+        # orphan an agent whose version failed to materialize
+        _validate_version_payload(payload.version)
         agent = AgentDefinition(id=f"agt_{payload.name}", name=payload.name, display_name=payload.display_name)
         agent = await deps.store.create_agent(agent)
         version = await _create_version(agent, payload.version)
@@ -223,9 +237,27 @@ def create_app(
         version = await _create_version(agent, payload)
         return version.model_dump()
 
+    def _validate_version_payload(payload: VersionIn) -> None:
+        """D4 checks + secret-store availability; idempotent, safe to call twice."""
+        env_values = payload.env or {}
+        validate_env_names(env_values)  # reserved namespace / POSIX shape / duplicates
+        if env_values and (deps.secret_box is None or deps.secret_store is None):
+            raise BadRequest("env secrets requested but the secret store is not configured")
+
     async def _create_version(agent: AgentDefinition, payload: VersionIn) -> AgentVersion:
+        _validate_version_payload(payload)
+        env_values = payload.env or {}
+        version_id = f"ver_{agent.name}_{payload.version}"
+        # D1/D6: values sealed once here, stored as envelopes keyed by version;
+        # the version itself carries names only. Envelopes go in FIRST (whole-set
+        # replace, safe on retry) so a failed metadata write is cleaned up below,
+        # and a failed envelope write leaves no version claiming secrets it
+        # cannot inject.
+        envelopes = deps.secret_box.seal_env(env_values) if env_values else {}
+        if envelopes:
+            await deps.secret_store.put_version_env(version_id, envelopes)
         version = AgentVersion(
-            id=f"ver_{agent.name}_{payload.version}",
+            id=version_id,
             agent_id=agent.id,
             version=payload.version,
             harness=payload.harness,
@@ -234,8 +266,14 @@ def create_app(
             seam_bindings=payload.seam_bindings,  # type: ignore[assignment]
             skill_refs=payload.skill_refs,  # type: ignore[assignment]
             model_config_decl=payload.model_config_decl,
+            env_secrets=sorted(env_values),
         )
-        version = await deps.store.create_version(version)
+        try:
+            version = await deps.store.create_version(version)
+        except Exception:
+            if envelopes:
+                await deps.secret_store.delete_version_env(version_id)
+            raise
         agent.default_version_id = version.id
         await deps.store.update_agent(agent)
         return version

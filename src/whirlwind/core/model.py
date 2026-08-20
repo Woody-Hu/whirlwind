@@ -61,6 +61,10 @@ class AgentVersion(BaseModel):
     seam_bindings: list[SeamBindingDecl] = Field(default_factory=list)
     skill_refs: list[SkillRef] = Field(default_factory=list)
     model_config_decl: dict[str, Any] = Field(default_factory=dict)  # provider/model/max_tokens
+    # Declared env secret NAMES only (ADR-0010 D1): values live in the
+    # SecretStore as encrypted envelopes, so every model_dump() surface
+    # (REST, JSONB, logs) can leak names at worst, never values.
+    env_secrets: list[str] = Field(default_factory=list)
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
 
 

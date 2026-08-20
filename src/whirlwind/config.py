@@ -60,6 +60,7 @@ _DEFAULTS: dict[str, Any] = {
     "runtime.data_dir": ".whirlwind",
     "runtime.repo_root": None,
     "runtime.api_key_env": "DEEPSEEK_API_KEY",
+    "runtime.secret_key_env": "WHIRLWIND_SECRET_KEY",
     "runtime.llm_upstream": "https://api.deepseek.com",
     "runtime.wheel_tick_ms": 20,
     "runtime.warm_pool": None,
@@ -74,7 +75,7 @@ _DEFAULTS: dict[str, Any] = {
 # section -> keys allowed inside it (ADR-0009 D4); unknown = hard error
 _SCHEMA: dict[str, set[str]] = {
     "server": {"host", "port"},
-    "runtime": {"data_dir", "repo_root", "api_key_env", "llm_upstream", "wheel_tick_ms", "warm_pool"},
+    "runtime": {"data_dir", "repo_root", "api_key_env", "secret_key_env", "llm_upstream", "wheel_tick_ms", "warm_pool"},
     "storage": {"metadata_backend", "postgres_dsn", "kv_backend", "redis_url"},
     "sandbox": {"max_live_sessions", "resources"},
 }
@@ -85,6 +86,7 @@ _ENV_TO_KEY: dict[str, str] = {
     "WHIRLWIND_DATA_DIR": "runtime.data_dir",
     "WHIRLWIND_REPO_ROOT": "runtime.repo_root",
     "WHIRLWIND_API_KEY_ENV": "runtime.api_key_env",
+    "WHIRLWIND_SECRET_KEY_ENV": "runtime.secret_key_env",
     "WHIRLWIND_LLM_UPSTREAM": "runtime.llm_upstream",
     "WHIRLWIND_WHEEL_TICK_MS": "runtime.wheel_tick_ms",
     "WHIRLWIND_METADATA_BACKEND": "storage.metadata_backend",
@@ -99,6 +101,7 @@ _STR_KEYS = {
     "server.host",
     "runtime.data_dir",
     "runtime.api_key_env",
+    "runtime.secret_key_env",
     "runtime.llm_upstream",
     "storage.metadata_backend",
     "storage.kv_backend",
@@ -241,6 +244,7 @@ def load_settings(
         data_dir=Path(values["runtime.data_dir"]).expanduser().resolve(),
         repo_root=path_of("runtime.repo_root"),
         api_key_env=values["runtime.api_key_env"],
+        secret_key_env=values["runtime.secret_key_env"],
         llm_upstream=values["runtime.llm_upstream"],
         wheel_tick_ms=values["runtime.wheel_tick_ms"],
         warm_pool=dict(warm_pool) if warm_pool else None,
@@ -289,6 +293,7 @@ def render_toml(settings: Settings) -> str:
     else:
         lines.append("# repo_root: unset (auto-detect)")
     lines.append(f"api_key_env = {_quote(runtime.api_key_env)}")
+    lines.append(f"secret_key_env = {_quote(runtime.secret_key_env)}")
     lines.append(f"llm_upstream = {_quote(runtime.llm_upstream)}")
     lines.append(f"wheel_tick_ms = {runtime.wheel_tick_ms}")
     if runtime.warm_pool:

@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.7",
     "croniter>=2.0",
     "pyyaml>=6.0",
+    "pynacl>=1.6.2",
 ]
 
 [project.scripts]

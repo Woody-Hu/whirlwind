@@ -46,7 +46,8 @@ from whirlwind.drivers import Resources, SandboxDriver, SandboxSpec, SnapshotArt
 from whirlwind.harness.adapter import AdapterRegistry
 from whirlwind.imaging import ImageRegistry
 from whirlwind.seam.model import SeamRenderer
-from whirlwind.storage.providers import EventBus, EventLog, MetadataStore
+from whirlwind.secrets import SecretBox, SecretBoxError
+from whirlwind.storage.providers import EventBus, EventLog, MetadataStore, SecretStore
 
 
 class HostletError(WhirlwindError):
@@ -105,6 +106,8 @@ class Hostlet:
         event_log: EventLog,
         bus: EventBus,
         config: HostletConfig,
+        secrets: SecretStore | None = None,
+        secret_box: SecretBox | None = None,
     ) -> None:
         self.driver = driver
         self.images = images
@@ -114,6 +117,10 @@ class Hostlet:
         self.event_log = event_log
         self.bus = bus
         self.config = config
+        # agent-env secrets (ADR-0010 D5): both wired together or not at all;
+        # ensure() fails closed when a version declares secrets but these are absent.
+        self._secrets = secrets
+        self._secret_box = secret_box
         self._sandboxes: dict[str, _ManagedSandbox] = {}
         self._api_key = os.environ.get(config.api_key_env, "")
         self._server: uvicorn.Server | None = None
@@ -212,7 +219,12 @@ class Hostlet:
             target.write_text(content)
         (workspace / ".whirlwind" / "manifest.json").write_text(manifest.model_dump_json())
 
-        harness_env = {**bundle.env, **prepared.env}
+        # D5 precedence: bundle.env < user secrets < prepared.env — adapter
+        # wiring (DSH_*, ECHO_*) always wins, so even a hostile name that
+        # slipped past validation cannot clobber the platform's own injection.
+        harness_env = dict(bundle.env)
+        harness_env.update(await self._resolve_env_secrets(version))
+        harness_env.update(prepared.env)
         harness_env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
         harness_env.setdefault("HOME", str(workspace))
         harness_env.setdefault("PYTHONUNBUFFERED", "1")
@@ -391,6 +403,34 @@ class Hostlet:
             return self._sandboxes[sandbox_id]
         except KeyError:
             raise NotFound(f"hostlet does not manage sandbox {sandbox_id}") from None
+
+    async def _resolve_env_secrets(self, version: AgentVersion) -> dict[str, str]:
+        """Decrypt the version's env secrets for injection (ADR-0010 D5).
+
+        Fail-closed semantics: a version that *declares* secrets must get all
+        of them — booting a harness without credentials it was promised is a
+        silent misconfiguration, not a degraded mode. The InjectionManifest is
+        never a carrier: values live only in process env + runtime.json.
+        """
+        if not version.env_secrets:
+            return {}
+        if self._secrets is None or self._secret_box is None:
+            raise HostletError(
+                f"version {version.id} declares env_secrets but the hostlet has no secret store wired"
+            )
+        try:
+            envelopes = await self._secrets.get_version_env(version.id)
+        except Exception as exc:
+            raise HostletError(f"failed to load env secrets for version {version.id}: {exc}") from exc
+        missing = [name for name in version.env_secrets if name not in envelopes]
+        if missing:
+            raise HostletError(
+                f"version {version.id} declares env secrets with no stored envelopes: {missing}"
+            )
+        try:
+            return self._secret_box.open_env({name: envelopes[name] for name in version.env_secrets})
+        except SecretBoxError as exc:
+            raise HostletError(f"failed to decrypt env secrets for version {version.id}: {exc}") from exc
 
     async def _stage_skill(self, ref: SkillRef, skills_dir: Path) -> Path:
         source = await self.store.skill_path(ref)

@@ -43,8 +43,13 @@ metadata:
   namespace: whirlwind
 type: Opaque
 stringData:
-  # placeholder — override at deploy time (kubectl create secret … --dry-run -o yaml | kubectl apply -f -)
+  # placeholders — override at deploy time (kubectl create secret … --dry-run -o yaml | kubectl apply -f -)
   DEEPSEEK_API_KEY: "changeme"
+  # master key for agent-defined env secrets (ADR-0010 D3): base64 of 32 bytes.
+  # generate: openssl rand -base64 32
+  # absent -> the runtime auto-generates /data/secret.key (dev convenience only;
+  # it shares the disk with the ciphertexts — provide this in production).
+  WHIRLWIND_SECRET_KEY: "changeme"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -94,6 +99,11 @@ spec:
                 secretKeyRef:
                   name: whirlwind-secrets
                   key: DEEPSEEK_API_KEY
+            - name: WHIRLWIND_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: whirlwind-secrets
+                  key: WHIRLWIND_SECRET_KEY
           ports:
             - name: http
               containerPort: 8410

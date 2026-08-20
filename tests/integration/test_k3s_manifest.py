@@ -101,10 +101,12 @@ def test_container_args_and_env(docs: dict[str, dict]) -> None:
     assert container["command"] == ["whirlwind"]
     assert container["args"] == ["serve", "--config", "/etc/whirlwind/whirlwind.toml"]
 
-    # The only env var is the credential itself — values never enter config files (ADR-0009 D5)
+    # The only env vars are credentials — values never enter config files (ADR-0009 D5);
+    # WHIRLWIND_SECRET_KEY seals agent-defined env secrets at rest (ADR-0010 D3)
     env = {e["name"]: e for e in container["env"]}
-    assert set(env) == {"DEEPSEEK_API_KEY"}
+    assert set(env) == {"DEEPSEEK_API_KEY", "WHIRLWIND_SECRET_KEY"}
     assert env["DEEPSEEK_API_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "whirlwind-secrets"
+    assert env["WHIRLWIND_SECRET_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "whirlwind-secrets"
 
     volumes = {v["name"]: v for v in docs["Deployment"]["spec"]["template"]["spec"]["volumes"]}
     assert volumes["config"]["configMap"]["name"] == "whirlwind-config"

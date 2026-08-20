@@ -71,6 +71,22 @@ class KVStore(Protocol):
 
 
 @runtime_checkable
+class SecretStore(Protocol):
+    """Encrypted agent-env envelopes keyed by version (ADR-0010 D6).
+
+    Values in and out are *envelope strings* (`v1:<key_id>:<b64>`), never
+    plaintext — the store never sees a decryptable secret; decryption stays in
+    `whirlwind/secrets.py` on the host side. `put_version_env` replaces the
+    whole envelope set for the version (immutable version unit, no partial
+    mutation).
+    """
+
+    async def put_version_env(self, version_id: str, envelopes: dict[str, str]) -> None: ...
+    async def get_version_env(self, version_id: str) -> dict[str, str]: ...
+    async def delete_version_env(self, version_id: str) -> None: ...
+
+
+@runtime_checkable
 class LockProvider(Protocol):
     """Distributed-lock-shaped primitive; in-process impl is a plain mutex set."""
 

@@ -192,6 +192,55 @@ async def test_locks_mutual_exclusion(lock_provider):
     assert await lock_provider.acquire("op", ttl_s=5) is True
 
 
+# --------------------------- SecretStore contract (memory + local file)
+
+async def test_secret_env_put_get_delete(secret_store):
+    assert await secret_store.get_version_env("ver_1") == {}
+    await secret_store.put_version_env("ver_1", {"GITHUB_TOKEN": "v1:aa:AA==", "OTHER": "v1:aa:BB=="})
+    assert await secret_store.get_version_env("ver_1") == {"GITHUB_TOKEN": "v1:aa:AA==", "OTHER": "v1:aa:BB=="}
+    await secret_store.delete_version_env("ver_1")
+    assert await secret_store.get_version_env("ver_1") == {}
+    # delete of a missing version is idempotent
+    await secret_store.delete_version_env("ver_1")
+
+
+async def test_secret_put_replaces_whole_set(secret_store):
+    """Immutable version unit: a re-put replaces, never merges (ADR-0010 D6)."""
+    await secret_store.put_version_env("ver_1", {"A": "v1:aa:AA==", "B": "v1:aa:BB=="})
+    await secret_store.put_version_env("ver_1", {"C": "v1:aa:CC=="})
+    assert await secret_store.get_version_env("ver_1") == {"C": "v1:aa:CC=="}
+    await secret_store.put_version_env("ver_1", {})
+    assert await secret_store.get_version_env("ver_1") == {}
+
+
+async def test_secret_versions_are_isolated(secret_store):
+    await secret_store.put_version_env("ver_1", {"A": "v1:aa:AA=="})
+    await secret_store.put_version_env("ver_2", {"A": "v1:aa:ZZ==", "B": "v1:aa:YY=="})
+    assert await secret_store.get_version_env("ver_1") == {"A": "v1:aa:AA=="}
+    assert await secret_store.get_version_env("ver_2") == {"A": "v1:aa:ZZ==", "B": "v1:aa:YY=="}
+    await secret_store.delete_version_env("ver_1")
+    assert await secret_store.get_version_env("ver_2") == {"A": "v1:aa:ZZ==", "B": "v1:aa:YY=="}
+
+
+async def test_secret_local_file_backend_is_ciphertext_only(tmp_path):
+    """The on-disk artifact carries envelopes, mode 0600, no plaintext."""
+    import json
+    import stat
+
+    from whirlwind.storage.local import LocalFileSecretStore
+
+    store = LocalFileSecretStore(tmp_path / "data")
+    await store.put_version_env("ver_x", {"GITHUB_TOKEN": "v1:ab12cd34:QUJDRA=="})
+    target = tmp_path / "data" / "secrets" / "ver_x.json"
+    assert target.is_file()
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    raw = target.read_text()
+    assert "GITHUB_TOKEN" in raw
+    assert "v1:ab12cd34:QUJDRA==" in raw
+    # the stored value is the envelope string, nothing else
+    assert json.loads(raw) == {"GITHUB_TOKEN": "v1:ab12cd34:QUJDRA=="}
+
+
 # --------------------------------- Redis-specific multi-process proof
 
 async def test_redis_kv_and_locks_across_instances(redis_url):

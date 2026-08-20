@@ -143,6 +143,29 @@ class MemoryMetadataStore:
         return self._skills.path(ref)
 
 
+class MemorySecretStore:
+    """In-process envelope store (ADR-0010 D6): for tests and single-proc dev.
+
+    Stores envelope strings only — this class never sees plaintext and holds no
+    key material; sealing/unsealing stays in `whirlwind/secrets.py`.
+    """
+
+    def __init__(self) -> None:
+        self._env: dict[str, dict[str, str]] = {}  # version_id -> {name: envelope}
+        self._lock = asyncio.Lock()
+
+    async def put_version_env(self, version_id: str, envelopes: dict[str, str]) -> None:
+        async with self._lock:
+            self._env[version_id] = dict(envelopes)
+
+    async def get_version_env(self, version_id: str) -> dict[str, str]:
+        return dict(self._env.get(version_id, {}))
+
+    async def delete_version_env(self, version_id: str) -> None:
+        async with self._lock:
+            self._env.pop(version_id, None)
+
+
 class MemoryKVStore:
     """Dict + lock KV with atomic CAS. Values are strings; TTL is advisory in-proc."""
 

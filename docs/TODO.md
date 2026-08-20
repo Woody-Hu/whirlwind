@@ -37,6 +37,7 @@ The gateway currently has no authn/authz (Architecture 3.1 G1 promises tenant au
 - [x] P1.4 Idempotency keys on mutating gateway routes (`Idempotency-Key` header, KVStore-backed replay/claim, 409 in-flight, 422 body mismatch) — ADR-0005 D3
 - [x] P1.5 k3s deployment form: `deploy/k3s/` (image build, manifest with probes/resources/PVC/NodePort, rerunnable smoke script); validated on a real k3s v1.36.3 control plane (`--disable-agent` — the sandbox container cannot run kubelet; pods verified through scheduling, PVC binding, NodePort) — ADR-0005 D4
 - [ ] P1.6 (next, with tenancy) API-key rate limiting per tenant; tenant-scoped quotas; cross-process quota hardening (Redis counter)
+- [x] P1.7 Agent-defined env secrets: names in `AgentVersion.env_secrets`, values sealed (pynacl SecretBox, `v1:<key_id>:<b64>` envelopes) into a `SecretStore` protocol with local-file default backend; write-only API surface (values never echoed); hostlet decrypts + injects at provision time with fail-closed semantics and precedence `bundle.env < user secrets < prepared.env`; reserved-name validation protects the relay boundary — ADR-0010
 
 ## P2 — Observability / 可观测性
 
@@ -83,4 +84,5 @@ ADR-0002 已预留 provider 位；P0 先落地单节点 PostgreSQL/Redis。多�
 - 2026-08 P1 (auth excluded): sandbox resource limits, live-session quota, idempotency keys, k3s deployment form with measured gate costs (ADR-0005)
 - 2026-08 EngEx: platform abstraction — one `PlatformFacts` object + `@platform_impl` behaviour plugins + `WHIRLWIND_PLATFORM` identity simulation (ADR-0007); test runner with full output to `.test-logs/` and terse console verdict (ADR-0008); AGENTS.md gains §3.3 platform rule and §4.5 test-logging spec
 - 2026-08 Docs: top-level bilingual docs split into separate EN / zh-CN files with language-switch links (README + architecture doc); convention codified as AGENTS.md §5.5 (see session-log 2026-08-20-doc-split.md)
+- 2026-08 P1.7: agent-defined env secrets — reference/value separation, pynacl encrypted envelopes, provision-time injection (ADR-0010; see session-log 2026-08-20-agent-env-secrets.md)
 - 2026-08 P0.7: unified configuration — single `whirlwind.toml` with layered injection (file < env < CLI), schema hard-validation, `config show` introspection; hardcoded operator defaults eliminated; AGENTS.md §3.5 rule (ADR-0009)

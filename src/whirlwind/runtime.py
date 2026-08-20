@@ -24,6 +24,8 @@ from whirlwind.harness.adapter import default_registry
 from whirlwind.hostlet import Hostlet, HostletConfig
 from whirlwind.imaging import LocalRegistry
 from whirlwind.seam.model import SeamRenderer
+from whirlwind.secrets import SecretBox
+from whirlwind.storage.local import LocalFileSecretStore
 from whirlwind.storage.wal_eventlog import WALEventLog
 from whirlwind.storage.memory import MemoryKVStore, MemoryMetadataStore
 from whirlwind.timer.wheel import HierarchicalTimer
@@ -34,6 +36,7 @@ class RuntimeConfig:
     data_dir: Path
     repo_root: Path | None = None  # where image builds install whirlwind from; default: repo containing this package
     api_key_env: str = "DEEPSEEK_API_KEY"
+    secret_key_env: str = "WHIRLWIND_SECRET_KEY"  # agent-env master key holder (ADR-0010 D3)
     llm_upstream: str = "https://api.deepseek.com"
     wheel_tick_ms: int = 20
     warm_pool: dict[str, int] | None = None  # agent_version_id -> min_warm; off when empty
@@ -102,6 +105,11 @@ class WhirlwindRuntime:
         self.event_log = WALEventLog(data_dir / "events")
         self.bus = InProcessEventBus()
 
+        # agent-env secrets (ADR-0010): one box (key from env, dev fallback file),
+        # one envelope store beside — never inside — the metadata.
+        self.secret_box = SecretBox.from_env_or_file(config.secret_key_env, data_dir)
+        self.secrets = LocalFileSecretStore(data_dir)
+
         # timer + imaging + data plane
         self.wheel = HierarchicalTimer(tick_ms=config.wheel_tick_ms)
         self.images = LocalRegistry(data_dir / "images")
@@ -113,6 +121,8 @@ class WhirlwindRuntime:
             store=self.store,
             event_log=self.event_log,
             bus=self.bus,
+            secrets=self.secrets,
+            secret_box=self.secret_box,
             config=HostletConfig(
                 data_dir=data_dir,
                 api_key_env=config.api_key_env,
@@ -148,6 +158,8 @@ class WhirlwindRuntime:
                 mcp=self.mcp,
                 repo_root=config.resolved_repo_root(),
                 kv=self.kv,
+                secret_box=self.secret_box,
+                secret_store=self.secrets,
             ),
             on_startup=self.start,
             on_shutdown=self.stop,

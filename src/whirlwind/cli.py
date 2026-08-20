@@ -109,17 +109,27 @@ def cmd_agent_create(args: argparse.Namespace) -> None:
         seam_bindings.append({"seam": seam, "provider": provider})
     skills = [{"name": name, "version": version or "1.0.0"} for name, _, version in (s.partition("=") for s in (args.skill or []))]
     model = {key: value for key, _, value in (m.partition("=") for m in (args.model or []))}
-    payload = {
-        "name": args.name,
-        "version": {
-            "version": args.agent_version,
-            "harness": args.harness,
-            "image_ref": args.image,
-            "seam_bindings": seam_bindings,
-            "skill_refs": skills,
-            "model_config_decl": model,
-        },
+    env: dict[str, str] = {}
+    for spec in args.env or []:
+        name, sep, value = spec.partition("=")
+        if not sep:
+            # bare NAME: pull the value from this process's environment so the
+            # secret never appears in shell history or process listings
+            if name not in os.environ:
+                _die(f"--env {name}: not set in the local environment")
+            value = os.environ[name]
+        env[name] = value
+    version_payload: dict[str, Any] = {
+        "version": args.agent_version,
+        "harness": args.harness,
+        "image_ref": args.image,
+        "seam_bindings": seam_bindings,
+        "skill_refs": skills,
+        "model_config_decl": model,
     }
+    if env:
+        version_payload["env"] = env
+    payload = {"name": args.name, "version": version_payload}
     with _client(args) as client:
         _print_json(_check(client.post("/agents", json=payload)))
 
@@ -269,6 +279,11 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--model", action="append", help="model_config_decl entry key=value (repeatable)")
     create.add_argument("--seam", action="append", help="seam=provider binding (repeatable)")
     create.add_argument("--skill", action="append", help="name=version skill ref (repeatable)")
+    create.add_argument(
+        "--env",
+        action="append",
+        help="secret env var: NAME (value read from local env) or NAME=VALUE (repeatable)",
+    )
     create.set_defaults(func=cmd_agent_create)
     listing = agent_sub.add_parser("list")
     listing.set_defaults(func=cmd_agent_list)
