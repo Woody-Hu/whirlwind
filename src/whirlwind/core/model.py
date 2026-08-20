@@ -40,6 +40,9 @@ class SeamBindingDecl(BaseModel):
     provider: str  # e.g. "sandbox-fs"
     policy: dict[str, Any] = Field(default_factory=dict)
     consumers: list[SeamConsumerDecl] = Field(default_factory=list)
+    # Provenance (ADR-0011 D2): set by instance resolution to the SeamInstance
+    # name that materialized this decl; empty for plain inline declarations.
+    instance: str = ""
 
 
 class SkillRef(BaseModel):
@@ -49,18 +52,79 @@ class SkillRef(BaseModel):
     version: str
 
 
+class SeamParamSpec(BaseModel):
+    """One declared parameter of a SeamTemplate (ADR-0011 D1)."""
+
+    name: str
+    type: str = "string"  # string | int | number | bool | list
+    required: bool = True
+    default: Any = None
+    description: str = ""
+
+
+class SeamTemplate(BaseModel):
+    """A named, parameterized seam-binding declaration (ADR-0011 D1).
+
+    `policy` and `consumer.config` bodies may contain `${param}` placeholders;
+    `params` declares them. Catalog entity addressed by `name`.
+    """
+
+    name: str
+    seam: str
+    provider: str
+    policy: dict[str, Any] = Field(default_factory=dict)
+    consumers: list[SeamConsumerDecl] = Field(default_factory=list)
+    params: list[SeamParamSpec] = Field(default_factory=list)
+    description: str = ""
+    created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
+
+
+class SeamInstance(BaseModel):
+    """A template + concrete params; the unit a sandbox binds (ADR-0011 D2)."""
+
+    name: str
+    template: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    description: str = ""
+    created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
+
+
+class HarnessBundle(BaseModel):
+    """The integral harness image combination, first-class (ADR-0011 D5)."""
+
+    name: str
+    harness: str  # adapter id: "dsh" | "echo" | ...
+    image_ref: str  # built image in the ImageRegistry
+    version: str = ""
+    description: str = ""
+    entrypoint: list[str] = Field(default_factory=list)  # optional launcher override
+    env: dict[str, str] = Field(default_factory=dict)  # image-level defaults; secrets never here
+    native_seams: list[str] = Field(default_factory=list)  # declarative surface of the adapter
+    created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
+
+
 class AgentVersion(BaseModel):
     """The immutable deployment unit: harness, image, entrypoint, seams, skills."""
 
     id: str
     agent_id: str
     version: str
-    harness: str  # "dsh" | "echo" | ...
+    harness: str  # "dsh" | "echo" | ... (from harness_bundle when bound, ADR-0011 D4)
     image_ref: str
     entrypoint: list[str] = Field(default_factory=list)
+    # New binding model (ADR-0011 D4): 0..1 named harness bundle, 0..N named
+    # seam instances. Legacy inline `seam_bindings` stays fully supported;
+    # resolution merges both and fails closed on seam collisions. Instance
+    # references are live (resolved at provision, ConfigMap semantics).
+    harness_bundle: str = ""
+    seam_instances: list[str] = Field(default_factory=list)
     seam_bindings: list[SeamBindingDecl] = Field(default_factory=list)
     skill_refs: list[SkillRef] = Field(default_factory=list)
     model_config_decl: dict[str, Any] = Field(default_factory=dict)  # provider/model/max_tokens
+    # Declared env secret NAMES only (ADR-0010 D1): values live in the
+    # SecretStore as encrypted envelopes, so every model_dump() surface
+    # (REST, JSONB, logs) can leak names at worst, never values.
+    env_secrets: list[str] = Field(default_factory=list)
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
 
 

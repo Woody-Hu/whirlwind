@@ -4,6 +4,12 @@ Pure httpx against a running gateway (`WHIRLWIND_URL`, default
 http://127.0.0.1:8410). `serve` is the only local command — it assembles the
 WhirlwindRuntime in-process and hands its app to uvicorn (the app lifespan runs
 runtime.start/stop).
+
+Configuration (ADR-0009): `serve` resolves its settings through
+`whirlwind.config.load_settings` — code defaults < whirlwind.toml <
+`WHIRLWIND_*` env < explicit CLI flags. The flags below carry `None` sentinels,
+so only explicitly-given flags override; defaults live exactly once in the
+loader. `whirlwind config show` prints the fully resolved configuration.
 """
 
 from __future__ import annotations
@@ -53,28 +59,43 @@ def _check(response: httpx.Response) -> Any:
 def cmd_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
-    from whirlwind.runtime import WhirlwindRuntime, RuntimeConfig
+    from whirlwind.config import ConfigError, load_settings
+    from whirlwind.runtime import WhirlwindRuntime
 
-    runtime = WhirlwindRuntime(
-        RuntimeConfig(
-            data_dir=_path(args.data_dir),
-            repo_root=_path(args.repo_root) if args.repo_root else None,
-            api_key_env=args.api_key_env,
-            llm_upstream=args.llm_upstream,
-            metadata_backend=args.metadata_backend,
-            postgres_dsn=args.postgres_dsn,
-            kv_backend=args.kv_backend,
-            redis_url=args.redis_url,
-            max_live_sessions=args.max_live_sessions,
+    try:
+        settings = load_settings(
+            config_path=args.config,
+            cli={
+                "server.host": args.host,
+                "server.port": args.port,
+                "runtime.data_dir": args.data_dir,
+                "runtime.repo_root": args.repo_root,
+                "runtime.api_key_env": args.api_key_env,
+                "runtime.llm_upstream": args.llm_upstream,
+                "storage.metadata_backend": args.metadata_backend,
+                "storage.postgres_dsn": args.postgres_dsn,
+                "storage.kv_backend": args.kv_backend,
+                "storage.redis_url": args.redis_url,
+                "sandbox.max_live_sessions": args.max_live_sessions,
+                "sandbox.driver": args.driver,
+                "sandbox.snapshot_mode": args.snapshot_mode,
+                "sandbox.snapshot_chain_max": args.snapshot_chain_max,
+            },
         )
-    )
-    uvicorn.run(runtime.app, host=args.host, port=args.port, log_level="info")
+    except ConfigError as exc:
+        _die(str(exc))
+    runtime = WhirlwindRuntime(settings.runtime)
+    uvicorn.run(runtime.app, host=settings.server.host, port=settings.server.port, log_level="info")
 
 
-def _path(value: str) -> "Any":
-    from pathlib import Path
+def cmd_config_show(args: argparse.Namespace) -> None:
+    from whirlwind.config import ConfigError, load_settings, render_toml
 
-    return Path(value).expanduser().resolve()
+    try:
+        settings = load_settings(config_path=args.config)
+    except ConfigError as exc:
+        _die(str(exc))
+    print(render_toml(settings))
 
 
 def cmd_image_build(args: argparse.Namespace) -> None:
@@ -91,17 +112,40 @@ def cmd_agent_create(args: argparse.Namespace) -> None:
         seam_bindings.append({"seam": seam, "provider": provider})
     skills = [{"name": name, "version": version or "1.0.0"} for name, _, version in (s.partition("=") for s in (args.skill or []))]
     model = {key: value for key, _, value in (m.partition("=") for m in (args.model or []))}
-    payload = {
-        "name": args.name,
-        "version": {
-            "version": args.agent_version,
-            "harness": args.harness,
-            "image_ref": args.image,
-            "seam_bindings": seam_bindings,
-            "skill_refs": skills,
-            "model_config_decl": model,
-        },
+    env: dict[str, str] = {}
+    for spec in args.env or []:
+        name, sep, value = spec.partition("=")
+        if not sep:
+            # bare NAME: pull the value from this process's environment so the
+            # secret never appears in shell history or process listings
+            if name not in os.environ:
+                _die(f"--env {name}: not set in the local environment")
+            value = os.environ[name]
+        env[name] = value
+    # ADR-0011 D4: with --harness-bundle the gateway derives harness/image_ref
+    # from the bundle; explicit flags stay optional (must agree or 422).
+    version_payload: dict[str, Any] = {
+        "version": args.agent_version,
+        "seam_bindings": seam_bindings,
+        "skill_refs": skills,
+        "model_config_decl": model,
     }
+    if args.harness_bundle:
+        version_payload["harness_bundle"] = args.harness_bundle
+        if args.harness:
+            version_payload["harness"] = args.harness
+        if args.image:
+            version_payload["image_ref"] = args.image
+    else:
+        if not (args.harness and args.image):
+            _die("--harness and --image are required (or pass --harness-bundle)")
+        version_payload["harness"] = args.harness
+        version_payload["image_ref"] = args.image
+    if args.seam_instance:
+        version_payload["seam_instances"] = args.seam_instance
+    if env:
+        version_payload["env"] = env
+    payload = {"name": args.name, "version": version_payload}
     with _client(args) as client:
         _print_json(_check(client.post("/agents", json=payload)))
 
@@ -209,21 +253,37 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     serve = sub.add_parser("serve", help="run the all-in-one runtime + gateway")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8410)
-    serve.add_argument("--data-dir", default=".whirlwind")
+    serve.add_argument("--config", default=None,
+                       help="path to whirlwind.toml (default: $WHIRLWIND_CONFIG or ./whirlwind.toml)")
+    serve.add_argument("--host", default=None, help="bind host (default: 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=None, help="bind port (default: 8410)")
+    serve.add_argument("--data-dir", default=None, help="state directory (default: .whirlwind)")
     serve.add_argument("--repo-root", default=None, help="repo image builds install whirlwind from (default: auto)")
-    serve.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
-    serve.add_argument("--llm-upstream", default="https://api.deepseek.com")
-    serve.add_argument("--metadata-backend", default="memory", choices=["memory", "postgres"],
+    serve.add_argument("--api-key-env", default=None,
+                       help="NAME of the env var holding the LLM credential (default: DEEPSEEK_API_KEY)")
+    serve.add_argument("--llm-upstream", default=None, help="LLM egress target (default: https://api.deepseek.com)")
+    serve.add_argument("--metadata-backend", default=None, choices=["memory", "postgres"],
                        help="metadata store backend (default: memory)")
-    serve.add_argument("--postgres-dsn", default=None, help="postgresql://user:pass@host:port/db (with --metadata-backend postgres)")
-    serve.add_argument("--kv-backend", default="memory", choices=["memory", "redis"],
+    serve.add_argument("--postgres-dsn", default=None, help="postgresql://user:pass@host:port/db (with metadata_backend=postgres)")
+    serve.add_argument("--kv-backend", default=None, choices=["memory", "redis"],
                        help="hot-state KV backend (default: memory)")
-    serve.add_argument("--redis-url", default=None, help="redis://[:pass@]host:port/db (with --kv-backend redis)")
+    serve.add_argument("--redis-url", default=None, help="redis://[:pass@]host:port/db (with kv_backend=redis)")
     serve.add_argument("--max-live-sessions", type=int, default=None,
                        help="cap on concurrent live sessions (default: uncapped)")
+    serve.add_argument("--driver", default=None, choices=["process", "runsc"],
+                       help="sandbox substrate for this node (ADR-0012; default: process)")
+    serve.add_argument("--snapshot-mode", default=None, choices=["full", "delta"],
+                       help="snapshot encoding (ADR-0012; default: full)")
+    serve.add_argument("--snapshot-chain-max", type=int, default=None,
+                       help="delta chain compaction bound (default: 16)")
     serve.set_defaults(func=cmd_serve)
+
+    config = sub.add_parser("config", help="configuration introspection (ADR-0009)")
+    config_sub = config.add_subparsers(dest="config_command", required=True)
+    show = config_sub.add_parser("show", help="print the effective configuration as TOML")
+    show.add_argument("--config", default=None,
+                      help="path to whirlwind.toml (default: $WHIRLWIND_CONFIG or ./whirlwind.toml)")
+    show.set_defaults(func=cmd_config_show)
 
     image = sub.add_parser("image")
     image_sub = image.add_subparsers(dest="image_command", required=True)
@@ -235,12 +295,21 @@ def build_parser() -> argparse.ArgumentParser:
     agent_sub = agent.add_subparsers(dest="agent_command", required=True)
     create = agent_sub.add_parser("create")
     create.add_argument("name")
-    create.add_argument("--harness", required=True)
-    create.add_argument("--image", required=True)
+    create.add_argument("--harness", default=None, help="harness adapter id (required without --harness-bundle)")
+    create.add_argument("--image", default=None, help="image ref (required without --harness-bundle)")
+    create.add_argument("--harness-bundle", default=None,
+                        help="named harness bundle (ADR-0011); supplies harness/image_ref when given")
     create.add_argument("--agent-version", default="1.0.0")
     create.add_argument("--model", action="append", help="model_config_decl entry key=value (repeatable)")
     create.add_argument("--seam", action="append", help="seam=provider binding (repeatable)")
+    create.add_argument("--seam-instance", action="append",
+                        help="named seam instance to bind (repeatable, ADR-0011)")
     create.add_argument("--skill", action="append", help="name=version skill ref (repeatable)")
+    create.add_argument(
+        "--env",
+        action="append",
+        help="secret env var: NAME (value read from local env) or NAME=VALUE (repeatable)",
+    )
     create.set_defaults(func=cmd_agent_create)
     listing = agent_sub.add_parser("list")
     listing.set_defaults(func=cmd_agent_list)

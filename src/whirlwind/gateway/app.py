@@ -23,18 +23,38 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from whirlwind.control.manager import SessionManager
-from whirlwind.core import AgentDefinition, AgentVersion, CronJob
-from whirlwind.core.errors import WhirlwindError, BadRequest, Conflict, InvalidTransition, NotFound, QuotaExceeded, SeamError
+from whirlwind.core import (
+    AgentDefinition,
+    AgentVersion,
+    CronJob,
+    HarnessBundle,
+    SeamBindingDecl,
+    SeamInstance,
+    SeamTemplate,
+)
+from whirlwind.core.errors import (
+    WhirlwindError,
+    BadRequest,
+    Conflict,
+    InvalidTransition,
+    NotFound,
+    QuotaExceeded,
+    SeamError,
+    Unprocessable,
+)
 from whirlwind.core.model import SessionPolicy
 from whirlwind.gateway.cron import CronScheduler
 from whirlwind.gateway.idempotency import IdempotencyMiddleware
 from whirlwind.gateway.mcp import McpGateway
+from whirlwind.harness.bundles import HarnessBundles
 from whirlwind.imaging import ImageRegistry, dsh_image_build, echo_image_build
+from whirlwind.seam.catalog import SeamCatalog
 from whirlwind.seam.model import SeamRenderer
-from whirlwind.storage.providers import EventLog, EventBus, KVStore, MetadataStore
+from whirlwind.secrets import SecretBox, SecretBoxError, SecretNameError, validate_env_names
+from whirlwind.storage.providers import EventLog, EventBus, KVStore, MetadataStore, SecretStore
 from whirlwind.timer.cron import CronExpr, CronParseError
 
 logger = logging.getLogger(__name__)
@@ -53,6 +73,16 @@ class GatewayDeps:
     repo_root: Path
     version: str = "0.1.0"
     kv: KVStore | None = None  # enables Idempotency-Key on mutating routes (ADR-0005 D3)
+    # agent-env secrets (ADR-0010): seal on version write; optional so
+    # secret-less deployments (and minimal test assemblies) stay valid —
+    # supplying `env` values without a box is rejected at request time.
+    secret_box: SecretBox | None = None
+    secret_store: SecretStore | None = None
+    # catalog faces (ADR-0011 D7): REST CRUD + eager admission validation.
+    # Optional with the same fail-closed contract — payloads referencing
+    # bundles/instances without wiring are rejected at request time.
+    seam_catalog: SeamCatalog | None = None
+    bundles: HarnessBundles | None = None
 
 
 # ------------------------------------------------------------- request models
@@ -60,12 +90,20 @@ class GatewayDeps:
 
 class VersionIn(BaseModel):
     version: str = "1.0.0"
-    harness: str
-    image_ref: str
+    # ADR-0011 D4: with `harness_bundle` set, harness/image_ref come from the
+    # bundle and may be omitted; explicitly given values must agree (422).
+    # Without a bundle they are required as before (legacy shape unchanged).
+    harness: str | None = None
+    image_ref: str | None = None
+    harness_bundle: str = ""
+    seam_instances: list[str] = Field(default_factory=list)
     entrypoint: list[str] = Field(default_factory=list)
     seam_bindings: list[dict[str, Any]] = Field(default_factory=list)
     skill_refs: list[dict[str, str]] = Field(default_factory=list)
     model_config_decl: dict[str, Any] = Field(default_factory=dict)
+    # write-only surface (ADR-0010 D6): accepted at creation, sealed into the
+    # SecretStore, never echoed back — responses carry `env_secrets` names.
+    env: dict[str, str] | None = None
 
 
 class AgentIn(BaseModel):
@@ -103,6 +141,9 @@ _STATUS_BY_ERROR = {
     QuotaExceeded: 429,
     SeamError: 400,
     BadRequest: 400,
+    Unprocessable: 422,  # well-formed payload, declared references disagree (ADR-0011 D4)
+    SecretNameError: 400,
+    SecretBoxError: 500,
 }
 
 
@@ -190,12 +231,123 @@ def create_app(
             ref = await deps.store.save_skill(name, version, source)
         return {"name": ref.name, "version": ref.version}
 
+    # ------------------------------------------------------ catalog (ADR-0011 D7)
+    # REST CRUD over seam templates / instances and harness bundles. Upserts
+    # validate eagerly (template bodies against the renderer's registry,
+    # instance params against their template) so a stored doc is always
+    # resolvable; resolution itself happens live at provision.
+
+    def _require_seam_catalog() -> SeamCatalog:
+        if deps.seam_catalog is None:
+            raise BadRequest("seam catalog is not configured")
+        return deps.seam_catalog
+
+    def _require_bundles() -> HarnessBundles:
+        if deps.bundles is None:
+            raise BadRequest("bundle catalog is not configured")
+        return deps.bundles
+
+    async def _parse_body(request: Request, model_cls: type[BaseModel]) -> BaseModel:
+        try:
+            return model_cls.model_validate_json(await request.body())
+        except ValidationError as exc:
+            raise BadRequest(f"invalid {model_cls.__name__} body: {exc.errors()[:3]}") from exc
+
+    @app.get("/seam-templates")
+    async def list_seam_templates() -> list[dict[str, Any]]:
+        return [t.model_dump() for t in await _require_seam_catalog().list_templates()]
+
+    @app.get("/seam-templates/{name}")
+    async def get_seam_template(name: str) -> dict[str, Any]:
+        template = await _require_seam_catalog().get_template(name)
+        if template is None:
+            raise NotFound(f"seam template {name!r}")
+        return template.model_dump()
+
+    @app.post("/seam-templates")
+    async def put_seam_template(request: Request) -> dict[str, Any]:
+        template = await _parse_body(request, SeamTemplate)
+        return (await _require_seam_catalog().put_template(template)).model_dump()
+
+    @app.put("/seam-templates/{name}")
+    async def put_seam_template_named(name: str, request: Request) -> dict[str, Any]:
+        template = await _parse_body(request, SeamTemplate)
+        if template.name != name:
+            raise BadRequest(f"body name {template.name!r} does not match path name {name!r}")
+        return (await _require_seam_catalog().put_template(template)).model_dump()
+
+    @app.delete("/seam-templates/{name}")
+    async def delete_seam_template(name: str) -> dict[str, Any]:
+        await _require_seam_catalog().delete_template(name)
+        return {"ok": True}
+
+    @app.get("/seam-instances")
+    async def list_seam_instances() -> list[dict[str, Any]]:
+        return [i.model_dump() for i in await _require_seam_catalog().list_instances()]
+
+    @app.get("/seam-instances/{name}")
+    async def get_seam_instance(name: str) -> dict[str, Any]:
+        instance = await _require_seam_catalog().get_instance(name)
+        if instance is None:
+            raise NotFound(f"seam instance {name!r}")
+        return instance.model_dump()
+
+    @app.post("/seam-instances")
+    async def put_seam_instance(request: Request) -> dict[str, Any]:
+        instance = await _parse_body(request, SeamInstance)
+        return (await _require_seam_catalog().put_instance(instance)).model_dump()
+
+    @app.put("/seam-instances/{name}")
+    async def put_seam_instance_named(name: str, request: Request) -> dict[str, Any]:
+        instance = await _parse_body(request, SeamInstance)
+        if instance.name != name:
+            raise BadRequest(f"body name {instance.name!r} does not match path name {name!r}")
+        return (await _require_seam_catalog().put_instance(instance)).model_dump()
+
+    @app.delete("/seam-instances/{name}")
+    async def delete_seam_instance(name: str) -> dict[str, Any]:
+        await _require_seam_catalog().delete_instance(name)
+        return {"ok": True}
+
+    @app.get("/harness-bundles")
+    async def list_harness_bundles() -> list[dict[str, Any]]:
+        return [b.model_dump() for b in await _require_bundles().list()]
+
+    @app.get("/harness-bundles/{name}")
+    async def get_harness_bundle(name: str) -> dict[str, Any]:
+        bundle = await _require_bundles().get(name)
+        if bundle is None:
+            raise NotFound(f"harness bundle {name!r}")
+        return bundle.model_dump()
+
+    @app.post("/harness-bundles")
+    async def put_harness_bundle(request: Request) -> dict[str, Any]:
+        bundle = await _parse_body(request, HarnessBundle)
+        return (await _require_bundles().put(bundle)).model_dump()
+
+    @app.put("/harness-bundles/{name}")
+    async def put_harness_bundle_named(name: str, request: Request) -> dict[str, Any]:
+        bundle = await _parse_body(request, HarnessBundle)
+        if bundle.name != name:
+            raise BadRequest(f"body name {bundle.name!r} does not match path name {name!r}")
+        return (await _require_bundles().put(bundle)).model_dump()
+
+    @app.delete("/harness-bundles/{name}")
+    async def delete_harness_bundle(name: str) -> dict[str, Any]:
+        """Remove a STORED bundle; builtin names (echo/dsh) keep resolving —
+        deleting a shadow doc restores the builtin, it cannot remove it."""
+        await _require_bundles().delete(name)
+        return {"ok": True}
+
     # ------------------------------------------------------------ agents
 
     @app.post("/agents")
     async def create_agent(payload: AgentIn) -> dict[str, Any]:
         if await deps.store.get_agent_by_name(payload.name) is not None:
             raise Conflict(f"agent {payload.name!r} already exists")
+        # full admission validation BEFORE the agent record exists: a rejected
+        # payload must not orphan an agent whose version failed to materialize
+        await _admit_version_payload(payload.version)
         agent = AgentDefinition(id=f"agt_{payload.name}", name=payload.name, display_name=payload.display_name)
         agent = await deps.store.create_agent(agent)
         version = await _create_version(agent, payload.version)
@@ -223,19 +375,98 @@ def create_app(
         version = await _create_version(agent, payload)
         return version.model_dump()
 
+    def _validate_version_payload(payload: VersionIn) -> None:
+        """D4 checks + secret-store availability; idempotent, safe to call twice."""
+        env_values = payload.env or {}
+        validate_env_names(env_values)  # reserved namespace / POSIX shape / duplicates
+        if env_values and (deps.secret_box is None or deps.secret_store is None):
+            raise BadRequest("env secrets requested but the secret store is not configured")
+        if payload.seam_instances and deps.seam_catalog is None:
+            raise BadRequest("seam_instances requested but the seam catalog is not configured")
+
+    async def _resolve_binding_fields(payload: VersionIn) -> tuple[str, str, list[str]]:
+        """ADR-0011 D4/D7: resolve the harness source at admission time.
+
+        With `harness_bundle` the bundle supplies harness/image_ref/entrypoint
+        (explicit values must agree — 422, never a silent override); without
+        it the legacy explicit pair is required. Returns the denormalized
+        (harness, image_ref, entrypoint) stored on the version.
+        """
+        if not payload.harness_bundle:
+            if not payload.harness or not payload.image_ref:
+                raise BadRequest("version requires harness + image_ref (or a harness_bundle)")
+            return payload.harness, payload.image_ref, payload.entrypoint
+        if deps.bundles is None:
+            raise BadRequest("harness_bundle requested but the bundle catalog is not configured")
+        bundle = await deps.bundles.get(payload.harness_bundle)
+        if bundle is None:
+            raise NotFound(f"harness bundle {payload.harness_bundle!r}")
+        for field, given, wanted in (
+            ("harness", payload.harness, bundle.harness),
+            ("image_ref", payload.image_ref, bundle.image_ref),
+        ):
+            if given and given != wanted:
+                raise Unprocessable(
+                    f"{field} {given!r} disagrees with harness bundle "
+                    f"{payload.harness_bundle!r} ({field}={wanted!r}); "
+                    "drop the field or fix the value"
+                )
+        return bundle.harness, bundle.image_ref, payload.entrypoint or bundle.entrypoint
+
+    async def _admit_version_payload(payload: VersionIn) -> tuple[str, str, list[str]]:
+        """Full admission validation (ADR-0011 D4/D7), callable before the
+        agent record exists: shape checks, bundle existence/agreement, and the
+        eager instance resolution (every reference resolves, no seam
+        collisions). Returns the denormalized (harness, image_ref, entrypoint)
+        for the version record; resolution repeats live at provision — this is
+        a gate, not a cache."""
+        _validate_version_payload(payload)
+        fields = await _resolve_binding_fields(payload)
+        if payload.seam_instances:
+            draft = AgentVersion(
+                id="ver_admission",
+                agent_id="agent_admission",
+                version=payload.version,
+                harness=fields[0],
+                image_ref=fields[1],
+                seam_instances=payload.seam_instances,
+                seam_bindings=[SeamBindingDecl.model_validate(b) for b in payload.seam_bindings],
+            )
+            await deps.seam_catalog.resolve_version_bindings(draft)
+        return fields
+
     async def _create_version(agent: AgentDefinition, payload: VersionIn) -> AgentVersion:
+        harness, image_ref, entrypoint = await _admit_version_payload(payload)
+        version_id = f"ver_{agent.name}_{payload.version}"
         version = AgentVersion(
-            id=f"ver_{agent.name}_{payload.version}",
+            id=version_id,
             agent_id=agent.id,
             version=payload.version,
-            harness=payload.harness,
-            image_ref=payload.image_ref,
-            entrypoint=payload.entrypoint,
+            harness=harness,
+            image_ref=image_ref,
+            entrypoint=entrypoint,
+            harness_bundle=payload.harness_bundle,
+            seam_instances=payload.seam_instances,
             seam_bindings=payload.seam_bindings,  # type: ignore[assignment]
             skill_refs=payload.skill_refs,  # type: ignore[assignment]
             model_config_decl=payload.model_config_decl,
         )
-        version = await deps.store.create_version(version)
+        env_values = payload.env or {}
+        # D1/D6: values sealed once here, stored as envelopes keyed by version;
+        # the version itself carries names only. Envelopes go in FIRST (whole-set
+        # replace, safe on retry) so a failed metadata write is cleaned up below,
+        # and a failed envelope write leaves no version claiming secrets it
+        # cannot inject.
+        envelopes = deps.secret_box.seal_env(env_values) if env_values else {}
+        if envelopes:
+            await deps.secret_store.put_version_env(version_id, envelopes)
+        version = version.model_copy(update={"env_secrets": sorted(env_values)})
+        try:
+            version = await deps.store.create_version(version)
+        except Exception:
+            if envelopes:
+                await deps.secret_store.delete_version_env(version_id)
+            raise
         agent.default_version_id = version.id
         await deps.store.update_agent(agent)
         return version

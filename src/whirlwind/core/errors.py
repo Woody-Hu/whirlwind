@@ -41,5 +41,16 @@ class BadRequest(WhirlwindError):
     code = "whirlwind/bad-request"
 
 
+class Unprocessable(WhirlwindError):
+    """Syntactically valid payload whose declared references disagree (422).
+
+    Distinct from BadRequest (malformed payload) so clients can tell a shape
+    error from a binding conflict (ADR-0011 D4: an explicit value that
+    disagrees with a harness bundle is a 422, not a silent override).
+    """
+
+    code = "whirlwind/unprocessable"
+
+
 class HarnessError(WhirlwindError):
     code = "whirlwind/harness"

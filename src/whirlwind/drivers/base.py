@@ -55,6 +55,8 @@ class Caps:
     background_restore: bool   # kernel-first restore that returns immediately
     net_policy: bool           # user-space network policy enforcement
     density: Density
+    delta_snapshots: bool = False  # diff checkpoints against a base + chain
+                                    # materialization (ADR-0012 D1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +108,7 @@ class SnapshotArtifact:
     manifest: dict[str, Any] = field(default_factory=dict)
     size: int = 0
     merkle: str = ""
+    delta: bool = False        # payload is an overlay vs manifest["base"] (ADR-0012 D2)
 
 
 @dataclass(slots=True)
@@ -140,6 +143,22 @@ class SandboxDriver(Protocol):
 
     async def resume(self, sandbox_id: str) -> None: ...
 
-    async def checkpoint(self, sandbox_id: str, kind: SnapshotKind) -> SnapshotArtifact: ...
+    async def checkpoint(
+        self,
+        sandbox_id: str,
+        kind: SnapshotKind,
+        *,
+        base: SnapshotArtifact | None = None,
+    ) -> SnapshotArtifact:
+        """`base=None` → full artifact. A `base` given to a driver without
+        `Caps.delta_snapshots` fails with UnsupportedCapability before any
+        work (ADR-0012 D3)."""
+        ...
+
+    async def materialize(self, artifact: SnapshotArtifact, dest: Path) -> None:
+        """Reconstruct the artifact's full tree at `dest` — full artifacts
+        copy, delta artifacts resolve + verify their base chain and apply
+        overlays in order (ADR-0012 D3)."""
+        ...
 
     async def destroy(self, sandbox_id: str, grace_s: float = 5.0) -> None: ...

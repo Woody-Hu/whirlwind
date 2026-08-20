@@ -31,6 +31,7 @@ from whirlwind.core import (
     SkillRef,
 )
 from whirlwind.core.errors import Conflict, NotFound
+from whirlwind.storage.providers import CATALOG_KINDS
 from whirlwind.storage.skills import SkillArchives
 
 _DDL = (
@@ -82,6 +83,15 @@ _DDL = (
         agent_id TEXT NOT NULL,
         seq      BIGSERIAL,
         doc      JSONB NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS catalog_docs (
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        seq  BIGSERIAL,
+        doc  JSONB NOT NULL,
+        PRIMARY KEY (kind, name)
     )
     """,
 )
@@ -325,3 +335,45 @@ class PostgresMetadataStore:
         if self._skills is None:
             return None
         return self._skills.path(ref)
+
+    # -- catalog docs (ADR-0011 D6): one generic table, kind-validated
+
+    def _check_kind(self, kind: str) -> None:
+        if kind not in CATALOG_KINDS:
+            raise NotFound(f"unknown catalog kind {kind!r}")
+
+    async def put_catalog_doc(self, kind: str, doc: dict) -> None:
+        self._check_kind(kind)
+        async with self._pg.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO catalog_docs (kind, name, doc) VALUES ($1, $2, $3)
+                ON CONFLICT (kind, name) DO UPDATE SET doc = EXCLUDED.doc
+                """,
+                kind,
+                doc["name"],
+                doc,
+            )
+
+    async def get_catalog_doc(self, kind: str, name: str) -> dict | None:
+        self._check_kind(kind)
+        async with self._pg.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT doc FROM catalog_docs WHERE kind = $1 AND name = $2", kind, name
+            )
+        return dict(row["doc"]) if row else None
+
+    async def list_catalog_docs(self, kind: str) -> list[dict]:
+        self._check_kind(kind)
+        async with self._pg.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT doc FROM catalog_docs WHERE kind = $1 ORDER BY seq", kind
+            )
+        return [dict(r["doc"]) for r in rows]
+
+    async def delete_catalog_doc(self, kind: str, name: str) -> None:
+        self._check_kind(kind)
+        async with self._pg.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM catalog_docs WHERE kind = $1 AND name = $2", kind, name
+            )

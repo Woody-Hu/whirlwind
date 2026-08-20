@@ -5,8 +5,13 @@
 ## 快照
 
 - 系统形态：harness 无感的沙箱化 agent 运行时；单进程 all-in-one（M1 竖切）→ 多 substrate 演进中。
-- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider）已完成；P1 除 auth 外完成（资源限制、配额、幂等键、k3s）；平台抽象（ADR-0007）与测试运行器（ADR-0008）已落地。详见 [docs/TODO.md](../TODO.md)。
-- 测试基线（2026-08-19，macOS/arm64，经 runner）：`not e2e` 全量 202 passed / 24 skipped（skip = runsc/binary、PG/Redis 不可达、Linux-only profile、e2e 排除）；以实际运行为准。
+- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider + 统一配置）已完成；P1 除 auth/tenancy 外完成（资源限制、配额、幂等键、k3s、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011、delta 快照 + 底座钉选 ADR-0012）；平台抽象（ADR-0007）与测试运行器（ADR-0008）已落地；顶层文档已拆分为 EN / zh-CN 互链（AGENTS.md §5.5，2026-08-20）。详见 [docs/TODO.md](../TODO.md)。
+- 测试基线（2026-08-20，Linux/x86_64 容器 + 本机 PG/Redis，经 runner）：`not e2e` 全量 **330 passed / 9 skipped**（runsc 已实装真跑 ×8；剩余 skip = k8s×4、vsock×1、rootless restore×1、e2e×3，均为环境事实）。冷启动优化后 p50：无限制 183ms / 含 rlimits 197ms（250ms 线内，详见 session-log 2026-08-20）。macOS 基线（2026-08-19）：202 passed / 24 skipped。
+- 懒加载原则（用户约定）：只对「该路径确实不需要」的可选/误伤导入惰性化（如沙箱子进程的 pydantic、echo 的 urllib）；业务必需的加载（agent.server 的 asyncio 等）一律保持急切。
+- 统一配置（ADR-0009，AGENTS.md §3.5）：默认值只在 `config.py` loader 定义一次；优先级 代码默认 < `whirlwind.toml` < `WHIRLWIND_*` env < CLI（None 哨兵）；`whirlwind config show` 自省；密钥值永不进配置文件（只配置 env 变量名）；k3s 经 ConfigMap 挂载 TOML。新增可调值必须登记 loader schema + env 映射。
+- Agent env 密钥（ADR-0010）：名字进 `AgentVersion.env_secrets`、值以 pynacl 信封（`v1:<key_id>:<b64>`）进 `SecretStore`（本地默认后端 0600 JSON）；API 对值只写；供给期 fail-closed 解密注入（优先级 bundle < secrets < prepared）；保留名（`WHIRLWIND_*`、`DEEPSEEK_API_KEY`）拒收。主密钥 `WHIRLWIND_SECRET_KEY` env（开发兜底 `data_dir/secret.key`）；密钥轮转未实现（信封 `v1` 前缀即接缝）。
+- Seam 模板/实例 + Harness 组合（ADR-0011，2026-08-20 落地）：`SeamTemplate`（`${param}` 占位符，注册期对 renderer registry 校验）经命名 `SeamInstance` 物化为具体 decl（ConfigMap 活性：供给期解析，非创建期冻结）；`HarnessBundle` 一等镜像组合（内建 echo/dsh 兜底，store 文档可遮蔽）；`AgentVersion` 绑 0..1 bundle + 0..N 实例，内联声明兼容；网关急切准入（未知引用 4xx、显式值不一致 422、拒绝不留孤儿 agent）+ Hostlet 供给期二次解析（fail-closed）；env 优先级 image < harness-bundle < secrets < prepared；通用 catalog 接缝（MetadataStore 四元组，memory/PG 对齐）。
+- Delta 快照 + 底座钉选（ADR-0012，2026-08-20 落地）：`Caps.delta_snapshots` 能力位（process=True，runsc 诚实 False，`checkpoint(base=...)` 前置拒绝）；overlay 工件（`WHIRLWIND_DELTA.json` 索引；merkle=物化端态，全量/delta 同态同根；逐跳链校验 fail-closed）；hostlet 血缘策略 `sandbox.snapshot_mode`（默认 full，逐字节兼容）+ `snapshot_chain_max` 压实；播种统一走 `driver.materialize`（链重建只在产出 driver 一处）；`sandbox.driver` 配置钉选（指名不可用即拒绝启动，绝不静默回退）。实测：稀疏负载 delta 载荷 ~50x 缩小；链深同时抬高 checkpoint/物化成本（delta 需先物化 base 链再 diff）——`chain_max` 一次界定三端成本；块索引优化是已知后续路径（ADR-0012 风险区）。
 
 ## 进行中
 
@@ -17,7 +22,8 @@
 
 ## 环境事实
 
-- 双平台：macOS（M 系列）+ Linux；`runsc` 仅 Linux，无二进制则相关测试 skip（不 stub）。
+- 双平台：macOS（M 系列）+ Linux；Linux 容器（Ubuntu 24.04，无 CAP_SYS_ADMIN）已实装 runsc `release-20260817.0` + 静态 busybox 1.35.0（`scripts/setup/install-runsc.sh`，分段并行下载 + sha512 校验）→ rootless + `--network=none` 模式，restore 用例按上游限制 skip。
+- microsandbox（libkrun）在无 `/dev/kvm` 的容器不可行（宿主 CPU 有 vmx/svm 但未透传）——与 ADR-0006「真机 session 实施」定位一致；本容器亦无 `/dev/vsock`。
 - 平台判断统一走 `core/platform`（ADR-0007）：`current_facts()` 取事实，`@platform_impl`/`resolve_impl` 分发行为插件；`WHIRLWIND_PLATFORM` 仅模拟身份（探测类事实永不被覆盖），生产不设置。
 - 测试一律经 `uv run python scripts/run_tests.py ...`（ADR-0008）：完整输出在 `.test-logs/`（gitignore），控制台仅 verdict + 失败摘要，退出码透传 pytest。
 - PostgreSQL / Redis 为 extras（`whirlwind[postgres]` / `whirlwind[redis]`）；集成测试经 conftest 探测，不可达即 skip。
@@ -28,8 +34,9 @@
 ## 坑与注意
 
 - runsc 受限容器（无 `CAP_SYS_ADMIN`）自动降级 rootless + `--network=none`；rootless 模式不支持 restore（runsc 上游限制）。
+- **busybox applet 陷阱**：bundle rootfs 只有 busybox 多调用二进制、无 applet 符号链接——`busybox sh -c "sleep 300"` 会因找不到独立 `sleep` 而 exit 127、容器 stopped；OCI init 必须用直接 applet 调用（`busybox sleep 300`）。长期 skip 的测试在装上真二进制后会暴露这类假设（2026-08-20 实录）。
 - 沙箱内 `DEEPSEEK_API_KEY` 只是占位符 `whirlwind-relay`；真实凭证仅在 Hostlet SecretRelay，出网时替换 Authorization 头。
-- README 中的测试计数是历史数据；引用性能数字必须注明来源（ADR / 实测）。
+- README / 架构文档已拆分 EN 与 zh-CN 两份（互链切换）；更新内容必须同步两份（AGENTS.md §5.5）。引用性能数字必须注明来源（ADR / 实测）。
 - driver 的 Caps/Resources 必须如实上报（声明即执行）；已知无法诚实保证的维度不声明或在 docstring 写明 caveat。
 
 ## 决策索引
@@ -44,3 +51,7 @@
 | microsandbox（libkrun/krunkit）第三 VM 底座、mac 本地可测 | 0006 |
 | 平台抽象：PlatformFacts / WHIRLWIND_PLATFORM / @platform_impl 插件 | 0007 |
 | 测试执行日志：runner 落盘 + junit 摘要 + 控制台简要结论 | 0008 |
+| 统一配置：whirlwind.toml 分层注入（file < env < CLI）、schema 强校验、config show | 0009 |
+| Agent env 密钥：引用/值分离、pynacl 信封、供给期 fail-closed 注入 | 0010 |
+| Seam 模板/实例 + Harness 组合 + Agent 绑定模型 + 通用 catalog 接缝 | 0011 |
+| Delta 快照（overlay 工件 + 链压实）+ `sandbox.driver` 底座钉选 | 0012 |

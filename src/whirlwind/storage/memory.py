@@ -17,6 +17,7 @@ from whirlwind.core import (
     SkillRef,
 )
 from whirlwind.core.errors import Conflict, NotFound
+from whirlwind.storage.providers import CATALOG_KINDS
 from whirlwind.storage.skills import SkillArchives
 
 
@@ -31,6 +32,7 @@ class MemoryMetadataStore:
         self._sandboxes: dict[str, Sandbox] = {}
         self._snapshots: dict[str, list[Snapshot]] = {}  # session_id -> newest last
         self._crons: dict[str, CronJob] = {}
+        self._catalog: dict[str, dict[str, dict]] = {kind: {} for kind in CATALOG_KINDS}
         self._skills = SkillArchives(skills_dir) if skills_dir is not None else None
         self._lock = asyncio.Lock()
 
@@ -141,6 +143,53 @@ class MemoryMetadataStore:
         if self._skills is None:
             return None
         return self._skills.path(ref)
+
+    # -- catalog docs (ADR-0011 D6)
+
+    def _catalog_table(self, kind: str) -> dict[str, dict]:
+        try:
+            return self._catalog[kind]
+        except KeyError:
+            raise NotFound(f"unknown catalog kind {kind!r}") from None
+
+    async def put_catalog_doc(self, kind: str, doc: dict) -> None:
+        table = self._catalog_table(kind)
+        async with self._lock:
+            table[doc["name"]] = dict(doc)
+
+    async def get_catalog_doc(self, kind: str, name: str) -> dict | None:
+        doc = self._catalog_table(kind).get(name)
+        return dict(doc) if doc is not None else None
+
+    async def list_catalog_docs(self, kind: str) -> list[dict]:
+        return [dict(doc) for doc in self._catalog_table(kind).values()]
+
+    async def delete_catalog_doc(self, kind: str, name: str) -> None:
+        async with self._lock:
+            self._catalog_table(kind).pop(name, None)
+
+
+class MemorySecretStore:
+    """In-process envelope store (ADR-0010 D6): for tests and single-proc dev.
+
+    Stores envelope strings only — this class never sees plaintext and holds no
+    key material; sealing/unsealing stays in `whirlwind/secrets.py`.
+    """
+
+    def __init__(self) -> None:
+        self._env: dict[str, dict[str, str]] = {}  # version_id -> {name: envelope}
+        self._lock = asyncio.Lock()
+
+    async def put_version_env(self, version_id: str, envelopes: dict[str, str]) -> None:
+        async with self._lock:
+            self._env[version_id] = dict(envelopes)
+
+    async def get_version_env(self, version_id: str) -> dict[str, str]:
+        return dict(self._env.get(version_id, {}))
+
+    async def delete_version_env(self, version_id: str) -> None:
+        async with self._lock:
+            self._env.pop(version_id, None)
 
 
 class MemoryKVStore:

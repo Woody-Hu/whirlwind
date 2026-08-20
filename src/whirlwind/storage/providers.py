@@ -21,6 +21,10 @@ from whirlwind.core import (
 )
 from whirlwind.core.events import Surface
 
+# Generic catalog-doc kinds (ADR-0011 D6): closed set validated by every
+# backend; new catalog entities ride the same seam with zero storage churn.
+CATALOG_KINDS = frozenset({"seam_template", "seam_instance", "harness_bundle"})
+
 
 @runtime_checkable
 class MetadataStore(Protocol):
@@ -59,6 +63,14 @@ class MetadataStore(Protocol):
     async def save_skill(self, name: str, version: str, archive: Path) -> SkillRef: ...
     async def skill_path(self, ref: SkillRef) -> Path | None: ...
 
+    # -- catalog docs (ADR-0011 D6): plain JSON documents addressed by kind+name;
+    #    typed validation lives in the domain wrappers (seam/catalog.py,
+    #    harness/bundles.py), the store stays generic on purpose.
+    async def put_catalog_doc(self, kind: str, doc: dict[str, Any]) -> None: ...
+    async def get_catalog_doc(self, kind: str, name: str) -> dict[str, Any] | None: ...
+    async def list_catalog_docs(self, kind: str) -> list[dict[str, Any]]: ...
+    async def delete_catalog_doc(self, kind: str, name: str) -> None: ...
+
 
 @runtime_checkable
 class KVStore(Protocol):
@@ -68,6 +80,22 @@ class KVStore(Protocol):
     async def put(self, key: str, value: str, *, ttl_s: float | None = None) -> None: ...
     async def delete(self, key: str) -> None: ...
     async def cas(self, key: str, expected: str | None, new: str) -> bool: ...
+
+
+@runtime_checkable
+class SecretStore(Protocol):
+    """Encrypted agent-env envelopes keyed by version (ADR-0010 D6).
+
+    Values in and out are *envelope strings* (`v1:<key_id>:<b64>`), never
+    plaintext — the store never sees a decryptable secret; decryption stays in
+    `whirlwind/secrets.py` on the host side. `put_version_env` replaces the
+    whole envelope set for the version (immutable version unit, no partial
+    mutation).
+    """
+
+    async def put_version_env(self, version_id: str, envelopes: dict[str, str]) -> None: ...
+    async def get_version_env(self, version_id: str) -> dict[str, str]: ...
+    async def delete_version_env(self, version_id: str) -> None: ...
 
 
 @runtime_checkable

@@ -13,12 +13,15 @@ Two layers, no fakes:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+
+from whirlwind.config import load_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_DIR = REPO_ROOT / "deploy" / "k3s"
@@ -71,9 +74,10 @@ def test_manifest_contains_expected_kinds(docs: dict[str, dict]) -> None:
 
 def test_namespace_and_config(docs: dict[str, dict]) -> None:
     assert docs["Namespace"]["metadata"]["name"] == "whirlwind"
-    config = docs["ConfigMap"]["data"]
-    assert set(config) >= {"llm-upstream", "max-live-sessions"}
-    assert int(config["max-live-sessions"]) > 0  # D2 gate is wired in
+    # Operator config ships as a mounted whirlwind.toml (ADR-0009 D1), not key/value env plumbing
+    config = docs["ConfigMap"]["data"]["whirlwind.toml"]
+    assert "[sandbox]" in config and "max_live_sessions = 64" in config  # D2 gate is wired in
+    assert 'llm_upstream = "https://api.deepseek.com"' in config
     secret = docs["Secret"]["stringData"]
     assert "DEEPSEEK_API_KEY" in secret
 
@@ -94,17 +98,21 @@ def test_deployment_shape(docs: dict[str, dict]) -> None:
 
 def test_container_args_and_env(docs: dict[str, dict]) -> None:
     container = _container(docs)
-    args = container["args"]
     assert container["command"] == ["whirlwind"]
-    for expected in ("serve", "--host", "0.0.0.0", "--port", "8410", "--data-dir", "/data", "--repo-root", "/app"):
-        assert expected in args
-    # ConfigMap values flow into the CLI through $(VAR) expansion
-    assert "$(LLM_UPSTREAM)" in args and "$(MAX_LIVE_SESSIONS)" in args
+    assert container["args"] == ["serve", "--config", "/etc/whirlwind/whirlwind.toml"]
 
+    # The only env vars are credentials — values never enter config files (ADR-0009 D5);
+    # WHIRLWIND_SECRET_KEY seals agent-defined env secrets at rest (ADR-0010 D3)
     env = {e["name"]: e for e in container["env"]}
+    assert set(env) == {"DEEPSEEK_API_KEY", "WHIRLWIND_SECRET_KEY"}
     assert env["DEEPSEEK_API_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "whirlwind-secrets"
-    assert env["LLM_UPSTREAM"]["valueFrom"]["configMapKeyRef"]["name"] == "whirlwind-config"
-    assert env["MAX_LIVE_SESSIONS"]["valueFrom"]["configMapKeyRef"]["key"] == "max-live-sessions"
+    assert env["WHIRLWIND_SECRET_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "whirlwind-secrets"
+
+    volumes = {v["name"]: v for v in docs["Deployment"]["spec"]["template"]["spec"]["volumes"]}
+    assert volumes["config"]["configMap"]["name"] == "whirlwind-config"
+    mounts = {m["name"]: m for m in container["volumeMounts"]}
+    assert mounts["config"]["mountPath"] == "/etc/whirlwind"
+    assert mounts["config"]["readOnly"] is True
 
 
 def test_probes_and_resources(docs: dict[str, dict]) -> None:
@@ -150,6 +158,22 @@ def test_dockerfile_keeps_repo_root_for_image_builds() -> None:
     dockerfile = (DEPLOY_DIR / "Dockerfile").read_text()
     assert "COPY src ./src" in dockerfile
     assert "pip install" in dockerfile
+
+
+def test_manifest_toml_passes_the_real_loader(docs: dict[str, dict], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dogfood ADR-0009: the ConfigMap's embedded whirlwind.toml must load
+    cleanly through load_settings (schema + types), so a manifest edit with a
+    typo fails in CI, not at pod boot."""
+    for name, value in os.environ.items():
+        if name.startswith("WHIRLWIND_"):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "whirlwind.toml"
+    cfg.write_text(docs["ConfigMap"]["data"]["whirlwind.toml"])
+    settings = load_settings(config_path=cfg)
+    assert settings.server.host == "0.0.0.0" and settings.server.port == 8410
+    assert settings.runtime.data_dir == Path("/data")
+    assert settings.runtime.max_live_sessions == 64
 
 
 # --------------------------------------------------------- live: apply to k3s

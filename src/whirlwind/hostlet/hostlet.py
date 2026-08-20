@@ -44,9 +44,12 @@ from whirlwind.core import (
 from whirlwind.core.errors import WhirlwindError, Conflict, NotFound
 from whirlwind.drivers import Resources, SandboxDriver, SandboxSpec, SnapshotArtifact
 from whirlwind.harness.adapter import AdapterRegistry
+from whirlwind.harness.bundles import HarnessBundles
 from whirlwind.imaging import ImageRegistry
+from whirlwind.seam.catalog import SeamCatalog
 from whirlwind.seam.model import SeamRenderer
-from whirlwind.storage.providers import EventBus, EventLog, MetadataStore
+from whirlwind.secrets import SecretBox, SecretBoxError
+from whirlwind.storage.providers import EventBus, EventLog, MetadataStore, SecretStore
 
 
 class HostletError(WhirlwindError):
@@ -60,6 +63,8 @@ class HostletConfig:
     llm_upstream: str = "https://api.deepseek.com"
     agent_boot_timeout_s: float = 30.0
     sandbox_resources: Resources | None = None  # per-sandbox ceilings (ADR-0005 D1)
+    snapshot_mode: str = "full"        # "full" | "delta" (ADR-0012 D4)
+    snapshot_chain_max: int = 16       # compaction bound in delta mode (ADR-0012 D4)
 
 
 @dataclass
@@ -89,6 +94,7 @@ def _as_artifact(snapshot: Snapshot) -> SnapshotArtifact:
         manifest=snapshot.manifest,
         size=snapshot.size,
         merkle=snapshot.merkle,
+        delta=bool(snapshot.manifest.get("delta", False)),
     )
 
 
@@ -105,6 +111,10 @@ class Hostlet:
         event_log: EventLog,
         bus: EventBus,
         config: HostletConfig,
+        secrets: SecretStore | None = None,
+        secret_box: SecretBox | None = None,
+        seam_catalog: SeamCatalog | None = None,
+        bundles: HarnessBundles | None = None,
     ) -> None:
         self.driver = driver
         self.images = images
@@ -114,6 +124,15 @@ class Hostlet:
         self.event_log = event_log
         self.bus = bus
         self.config = config
+        # agent-env secrets (ADR-0010 D5): both wired together or not at all;
+        # ensure() fails closed when a version declares secrets but these are absent.
+        self._secrets = secrets
+        self._secret_box = secret_box
+        # ADR-0011 D4/D5: live reference resolution at provision time. Absent
+        # wiring is legal (versions without references never touch these);
+        # a version WITH references and no wiring fails closed in ensure().
+        self._seam_catalog = seam_catalog
+        self._bundles = bundles
         self._sandboxes: dict[str, _ManagedSandbox] = {}
         self._api_key = os.environ.get(config.api_key_env, "")
         self._server: uvicorn.Server | None = None
@@ -167,6 +186,7 @@ class Hostlet:
         """Provision + boot a sandbox. `session=None` provisions a WARM
         (unbound, pre-booted) sandbox for the pool; otherwise binds directly."""
         sandbox_id = new_sandbox_id()
+        version, harness_bundle_env = await self._resolve_version(version)
         bundle = await self.images.resolve(version.image_ref)
         adapter = self.adapters.adapter_for(version.harness)
         if from_snapshot is not None and from_snapshot.manifest.get("workspace"):
@@ -183,10 +203,13 @@ class Hostlet:
             # Seed harness/user state from the snapshot BEFORE the fresh plan
             # files are written: the plan (ports, sandbox ids, workspace paths)
             # is per-sandbox and must win over the snapshot's stale copies.
+            # Seeding routes through the driver (ADR-0012 D3): delta artifacts
+            # carry a chain only their producing driver can reconstruct.
             artifact = _as_artifact(from_snapshot)
-            if not artifact.path.is_dir():
-                raise HostletError(f"snapshot artifact missing: {artifact.path}")
-            shutil.copytree(artifact.path, workspace, symlinks=True, dirs_exist_ok=True)
+            try:
+                await self.driver.materialize(artifact, workspace)
+            except WhirlwindError as exc:
+                raise HostletError(f"snapshot seed failed: {exc}") from exc
 
         # stage skills from the resource registry into the workspace
         skills: list[tuple[SkillRef, str]] = []
@@ -212,7 +235,15 @@ class Hostlet:
             target.write_text(content)
         (workspace / ".whirlwind" / "manifest.json").write_text(manifest.model_dump_json())
 
-        harness_env = {**bundle.env, **prepared.env}
+        # D5 precedence: image env < harness-bundle env < user secrets <
+        # prepared.env — adapter wiring (DSH_*, ECHO_*) always wins, so even a
+        # hostile name that slipped past validation cannot clobber the
+        # platform's own injection (bundle overlays are image-level defaults,
+        # ADR-0011 D5; secrets never ride this path).
+        harness_env = dict(bundle.env)
+        harness_env.update(harness_bundle_env)
+        harness_env.update(await self._resolve_env_secrets(version))
+        harness_env.update(prepared.env)
         harness_env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
         harness_env.setdefault("HOME", str(workspace))
         harness_env.setdefault("PYTHONUNBUFFERED", "1")
@@ -339,7 +370,10 @@ class Hostlet:
         record.status = SandboxStatus.SNAPSHOTTING
         await self.store.upsert_sandbox(record)
 
-        artifact = await self.driver.checkpoint(sandbox_id, SnapshotKind.DATA)
+        base_artifact = await self._delta_base(managed.session_id)
+        artifact = await self.driver.checkpoint(
+            sandbox_id, SnapshotKind.DATA, base=base_artifact
+        )
         snapshot = Snapshot(
             kind=SnapshotKind.DATA,
             subject=sandbox_id,
@@ -350,6 +384,9 @@ class Hostlet:
                 "harness": managed.harness,
                 "workspace": str(managed.workspace),
                 "files": artifact.manifest.get("files"),
+                "delta": artifact.delta,
+                "chain_depth": artifact.manifest.get("chain_depth", 0),
+                **({"base": artifact.manifest["base"]} if artifact.delta else {}),
             },
             location=str(artifact.path),
             size=artifact.size,
@@ -386,11 +423,98 @@ class Hostlet:
             await self.store.upsert_sandbox(previous)
         return sandbox
 
+    async def _delta_base(self, session_id: str) -> SnapshotArtifact | None:
+        """Pick the delta base for suspend (ADR-0012 D4): the session's latest
+        DATA snapshot, when delta mode is on, the driver declares the
+        capability, and the chain stays under the compaction bound. Anything
+        else → None (full snapshot): first snapshot of a lineage, warm
+        sandboxes with no session, full mode, or the compaction point."""
+        if self.config.snapshot_mode != "delta" or not session_id:
+            return None
+        if not self.driver.capabilities().delta_snapshots:
+            # boot validation normally refuses this composition; the guard
+            # keeps direct wiring (tests, embedders) honest per-suspend too.
+            raise HostletError(
+                "snapshot_mode=delta but the driver does not declare delta_snapshots"
+            )
+        latest = await self.store.latest_session_snapshot(session_id)
+        if latest is None or latest.kind != SnapshotKind.DATA:
+            return None
+        if int(latest.manifest.get("chain_depth", 0)) >= self.config.snapshot_chain_max:
+            return None  # compaction: a full snapshot resets the chain
+        return _as_artifact(latest)
+
     def _get(self, sandbox_id: str) -> _ManagedSandbox:
         try:
             return self._sandboxes[sandbox_id]
         except KeyError:
             raise NotFound(f"hostlet does not manage sandbox {sandbox_id}") from None
+
+    async def _resolve_version(self, version: AgentVersion) -> tuple[AgentVersion, dict[str, str]]:
+        """Materialize the effective version at provision time (ADR-0011 D4/D5).
+
+        Both reference kinds are LIVE (ConfigMap semantics — resolved here, not
+        at version creation): the current harness bundle supplies
+        harness/image/entrypoint defaults plus an env overlay, and the current
+        seam instances materialize into inline decls (merged with any legacy
+        inline bindings, dedup-checked by the catalog). Versions without
+        references pass through untouched; versions with references but no
+        wiring fail closed — a sandbox must never boot on unresolved
+        declarations. The renderer downstream stays pure and synchronous.
+        """
+        bundle_env: dict[str, str] = {}
+        if version.harness_bundle:
+            if self._bundles is None:
+                raise HostletError(
+                    f"version {version.id} binds harness bundle {version.harness_bundle!r} "
+                    "but the hostlet has no bundle catalog wired"
+                )
+            harness_bundle = await self._bundles.resolve(version.harness_bundle)
+            version = version.model_copy(
+                update={
+                    "harness": harness_bundle.harness,
+                    "image_ref": harness_bundle.image_ref,
+                    "entrypoint": version.entrypoint or harness_bundle.entrypoint,
+                }
+            )
+            bundle_env = dict(harness_bundle.env)
+        if version.seam_instances:
+            if self._seam_catalog is None:
+                raise HostletError(
+                    f"version {version.id} references seam instances {version.seam_instances} "
+                    "but the hostlet has no seam catalog wired"
+                )
+            decls = await self._seam_catalog.resolve_version_bindings(version)
+            version = version.model_copy(update={"seam_bindings": decls})
+        return version, bundle_env
+
+    async def _resolve_env_secrets(self, version: AgentVersion) -> dict[str, str]:
+        """Decrypt the version's env secrets for injection (ADR-0010 D5).
+
+        Fail-closed semantics: a version that *declares* secrets must get all
+        of them — booting a harness without credentials it was promised is a
+        silent misconfiguration, not a degraded mode. The InjectionManifest is
+        never a carrier: values live only in process env + runtime.json.
+        """
+        if not version.env_secrets:
+            return {}
+        if self._secrets is None or self._secret_box is None:
+            raise HostletError(
+                f"version {version.id} declares env_secrets but the hostlet has no secret store wired"
+            )
+        try:
+            envelopes = await self._secrets.get_version_env(version.id)
+        except Exception as exc:
+            raise HostletError(f"failed to load env secrets for version {version.id}: {exc}") from exc
+        missing = [name for name in version.env_secrets if name not in envelopes]
+        if missing:
+            raise HostletError(
+                f"version {version.id} declares env secrets with no stored envelopes: {missing}"
+            )
+        try:
+            return self._secret_box.open_env({name: envelopes[name] for name in version.env_secrets})
+        except SecretBoxError as exc:
+            raise HostletError(f"failed to decrypt env secrets for version {version.id}: {exc}") from exc
 
     async def _stage_skill(self, ref: SkillRef, skills_dir: Path) -> Path:
         source = await self.store.skill_path(ref)
@@ -414,7 +538,7 @@ class Hostlet:
                     return
             except httpx.HTTPError:
                 pass
-            await asyncio.sleep(0.02)  # tight poll: boot latency shows up directly in dispatch p50
+            await asyncio.sleep(0.005)  # tight poll: boot latency shows up directly in dispatch p50
         raise HostletError(f"sandbox agent did not become healthy within {self.config.agent_boot_timeout_s}s")
 
     # -------------------------------------------------------- control face
