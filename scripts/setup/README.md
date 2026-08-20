@@ -15,6 +15,7 @@ their own result at the end.
 | `setup-kvm-linux.sh` | 启用 KVM（modprobe kvm/kvm_intel/kvm_amd + /dev/kvm 节点 + 诚实自验 open(2)）——**不"安装"软件，而是准备 kernel 能力** | **Linux only，root/CAP_SYS_ADMIN；在 VM 内需 L0 开嵌套虚拟化；不可在无特权容器里用** | microsandbox VM 门控测试的真机前置（见注记；macOS 走 HVF 无需本脚本） |
 | `install-postgres.sh` | PostgreSQL server + client + libpq headers | Ubuntu/Debian (apt) · RHEL/Fedora (dnf) · macOS (brew) | `whirlwind[postgres]` 集成测试 |
 | `install-redis.sh` | Redis server | Ubuntu/Debian (apt) · RHEL/Fedora (dnf) · macOS (brew) | `whirlwind[redis]` 集成测试 |
+| `provision-test-db.sh` | 装配集成测试默认 DSN 需要的最小角色/库：`whirlwind` 登录角色 + `whirlwind_test` 库（owner=role）+ redis ping 自验；**幂等** | **Ubuntu/Debian PostgreSQL 16+（pg_ctlcluster 布局），redis-cli**——RHEL/macOS 不同 | 让 `install-*.sh` 安装后默认 DSN 直接可用（否则测试如实 skip，见下注记） |
 
 Notes / 注记：
 
@@ -34,5 +35,7 @@ Notes / 注记：
 - 安装后验证：`runsc --version`、`msb --version && msb doctor`、`pg_isready`、
   `redis-cli ping`，再经 runner 跑对应集成测试
   （`uv run python scripts/run_tests.py tests/integration/... -q`）。
-- PG 测试库：`sudo -u postgres createdb whirlwind_test`，DSN 经
-  `WHIRLWIND_POSTGRES_DSN` 或 `whirlwind.toml` 的 `[storage]` 提供。
+- PG 测试库：先 `install-postgres.sh` 装服务，再
+  `sudo scripts/setup/provision-test-db.sh` 装配默认 DSN 需要的 `whirlwind` 角色与
+  `whirlwind_test` 库；DSN 经 `WHIRLWIND_TEST_POSTGRES_DSN` 或 `WHIRLWIND_POSTGRES_DSN`
+  覆盖（默认 `postgresql://whirlwind:whirlwind@127.0.0.1:5432/whirlwind_test`）。
