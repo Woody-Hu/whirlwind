@@ -45,10 +45,18 @@ class ServerSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class LoggingSettings:
+    level: str = "INFO"  # DEBUG | INFO | WARNING | ERROR | CRITICAL
+    format: str = "json"  # json | text (ADR-0013 P2.2)
+    environment: str = "unknown"  # injected into every structured log record
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     server: ServerSettings
     runtime: "RuntimeConfig"
     config_path: Path | None  # provenance: the file that was loaded, if any
+    logging: LoggingSettings = LoggingSettings()
 
 
 # ---------------------------------------------------------------- schema
@@ -57,6 +65,9 @@ class Settings:
 _DEFAULTS: dict[str, Any] = {
     "server.host": "127.0.0.1",
     "server.port": 8410,
+    "logging.level": "INFO",
+    "logging.format": "json",
+    "logging.environment": "unknown",
     "runtime.data_dir": ".whirlwind",
     "runtime.repo_root": None,
     "runtime.api_key_env": "DEEPSEEK_API_KEY",
@@ -78,6 +89,7 @@ _DEFAULTS: dict[str, Any] = {
 # section -> keys allowed inside it (ADR-0009 D4); unknown = hard error
 _SCHEMA: dict[str, set[str]] = {
     "server": {"host", "port"},
+    "logging": {"level", "format", "environment"},
     "runtime": {"data_dir", "repo_root", "api_key_env", "secret_key_env", "llm_upstream", "wheel_tick_ms", "warm_pool"},
     "storage": {"metadata_backend", "postgres_dsn", "kv_backend", "redis_url"},
     "sandbox": {"max_live_sessions", "resources", "driver", "snapshot_mode", "snapshot_chain_max"},
@@ -86,6 +98,9 @@ _SCHEMA: dict[str, set[str]] = {
 _ENV_TO_KEY: dict[str, str] = {
     "WHIRLWIND_HOST": "server.host",
     "WHIRLWIND_PORT": "server.port",
+    "WHIRLWIND_LOG_LEVEL": "logging.level",
+    "WHIRLWIND_LOG_FORMAT": "logging.format",
+    "WHIRLWIND_LOG_ENV": "logging.environment",
     "WHIRLWIND_DATA_DIR": "runtime.data_dir",
     "WHIRLWIND_REPO_ROOT": "runtime.repo_root",
     "WHIRLWIND_API_KEY_ENV": "runtime.api_key_env",
@@ -108,9 +123,12 @@ _ENUM_KEYS: dict[str, set[str]] = {
     # cross-check lives in the composition root, which owns the driver
     "sandbox.driver": {"process", "runsc", "microsandbox"},
     "sandbox.snapshot_mode": {"full", "delta"},
+    "logging.level": {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"},
+    "logging.format": {"json", "text"},
 }
 _STR_KEYS = {
     "server.host",
+    "logging.environment",
     "runtime.data_dir",
     "runtime.api_key_env",
     "runtime.secret_key_env",
@@ -250,6 +268,9 @@ def load_settings(
                 continue
             values[dotted] = value
 
+    # case-insensitive log level from any layer
+    values["logging.level"] = str(values["logging.level"]).upper()
+
     for dotted, value in values.items():
         layer = f"config file {resolved_path}" if resolved_path is not None else "defaults"
         _validate(dotted, value, layer)
@@ -287,7 +308,12 @@ def load_settings(
         snapshot_chain_max=values["sandbox.snapshot_chain_max"],
     )
     server = ServerSettings(host=values["server.host"], port=values["server.port"])
-    return Settings(server=server, runtime=runtime, config_path=resolved_path)
+    logging = LoggingSettings(
+        level=values["logging.level"],
+        format=values["logging.format"],
+        environment=values["logging.environment"],
+    )
+    return Settings(server=server, runtime=runtime, config_path=resolved_path, logging=logging)
 
 
 # ---------------------------------------------------------------- rendering
@@ -308,6 +334,11 @@ def render_toml(settings: Settings) -> str:
     lines.append("[server]")
     lines.append(f"host = {_quote(settings.server.host)}")
     lines.append(f"port = {settings.server.port}")
+    lines.append("")
+    lines.append("[logging]")
+    lines.append(f"level = {_quote(settings.logging.level)}")
+    lines.append(f"format = {_quote(settings.logging.format)}")
+    lines.append(f"environment = {_quote(settings.logging.environment)}")
     lines.append("")
     lines.append("[runtime]")
     lines.append(f"data_dir = {_quote(str(runtime.data_dir))}")

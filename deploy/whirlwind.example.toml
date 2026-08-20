@@ -12,6 +12,11 @@
 host = "127.0.0.1"            # uvicorn bind; "0.0.0.0" when behind a service mesh
 port = 8410
 
+[logging]                     # structured logging (ADR-0013 P2.2)
+level = "INFO"                # DEBUG | INFO | WARNING | ERROR | CRITICAL
+format = "json"               # "json" (production) | "text" (interactive shells)
+environment = "unknown"       # injected into every structured log record
+
 [runtime]
 data_dir = ".whirlwind"       # resolved against cwd at load time
 # repo_root = null            # where image builds install whirlwind from; default: auto-detect

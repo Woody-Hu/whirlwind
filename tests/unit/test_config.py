@@ -55,6 +55,9 @@ def test_defaults_with_no_layers(tmp_path: Path) -> None:
     assert settings.runtime.max_live_sessions is None
     assert settings.runtime.sandbox_resources is None
     assert settings.runtime.warm_pool is None
+    assert settings.logging.level == "INFO"
+    assert settings.logging.format == "json"
+    assert settings.logging.environment == "unknown"
 
 
 def test_data_dir_resolves_absolute() -> None:
@@ -113,6 +116,28 @@ def test_env_int_parses(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = load_settings()
     assert settings.server.port == 9001
     assert settings.runtime.max_live_sessions == 7
+
+
+def test_logging_env_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WHIRLWIND_LOG_LEVEL", "debug")
+    monkeypatch.setenv("WHIRLWIND_LOG_FORMAT", "text")
+    monkeypatch.setenv("WHIRLWIND_LOG_ENV", "production")
+    settings = load_settings()
+    assert settings.logging.level == "DEBUG"  # case-normalized
+    assert settings.logging.format == "text"
+    assert settings.logging.environment == "production"
+
+
+def test_logging_level_enum_is_validated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WHIRLWIND_LOG_LEVEL", "LOUD")
+    with pytest.raises(ConfigError, match="logging.level must be one of"):
+        load_settings()
+
+
+def test_logging_format_unknown_value_is_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WHIRLWIND_LOG_FORMAT", "yaml")
+    with pytest.raises(ConfigError, match="logging.format must be one of"):
+        load_settings()
 
 
 def test_env_int_garbage_is_config_error(monkeypatch: pytest.MonkeyPatch) -> None:

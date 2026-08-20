@@ -60,6 +60,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
     from whirlwind.config import ConfigError, load_settings
+    from whirlwind.observability.logconfig import setup_logging
     from whirlwind.runtime import WhirlwindRuntime
 
     try:
@@ -84,8 +85,30 @@ def cmd_serve(args: argparse.Namespace) -> None:
         )
     except ConfigError as exc:
         _die(str(exc))
+    settings = _with_arg_log_levels(args, settings)
+    # structured logging first, so every later gateway/control line is JSON
+    # (ADR-0013 P2.2); uvicorn keeps its own access logger on top.
+    setup_logging(
+        level=settings.logging.level,
+        format=settings.logging.format,
+        environment=settings.logging.environment,
+    )
     runtime = WhirlwindRuntime(settings.runtime)
     uvicorn.run(runtime.app, host=settings.server.host, port=settings.server.port, log_level="info")
+
+
+def _with_arg_log_levels(args: argparse.Namespace, settings: Any) -> Any:
+    """Let `--log-level/--log-format` (CLI = highest layer) override config/env."""
+    level = getattr(args, "log_level", None)
+    fmt = getattr(args, "log_format", None)
+    if level is None and fmt is None:
+        return settings
+    return settings._replace(
+        logging=settings.logging._replace(
+            level=(level or settings.logging.level),
+            format=(fmt or settings.logging.format),
+        )
+    )
 
 
 def cmd_config_show(args: argparse.Namespace) -> None:
@@ -257,6 +280,14 @@ def build_parser() -> argparse.ArgumentParser:
                        help="path to whirlwind.toml (default: $WHIRLWIND_CONFIG or ./whirlwind.toml)")
     serve.add_argument("--host", default=None, help="bind host (default: 127.0.0.1)")
     serve.add_argument("--port", type=int, default=None, help="bind port (default: 8410)")
+    serve.add_argument(
+        "--log-level", default=None, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="structured logging level (default: INFO)",
+    )
+    serve.add_argument(
+        "--log-format", default=None, choices=["json", "text"],
+        help="structured logging format (default: json)",
+    )
     serve.add_argument("--data-dir", default=None, help="state directory (default: .whirlwind)")
     serve.add_argument("--repo-root", default=None, help="repo image builds install whirlwind from (default: auto)")
     serve.add_argument("--api-key-env", default=None,
