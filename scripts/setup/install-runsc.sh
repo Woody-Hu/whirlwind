@@ -62,7 +62,7 @@ fetch() { # fetch <url> <dest> [segments]
     pids+=("$!")
   done
   for pid in "${pids[@]}"; do wait "${pid}"; done
-  cat "$(ls "${dest}".part* | sort -V)" > "${dest}"
+  for i in $(seq 0 $((segments - 1))); do cat "${dest}.part${i}"; done > "${dest}"
   rm -f "${dest}".part*
   local got
   got="$(stat -c%s "${dest}")"
