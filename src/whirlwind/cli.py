@@ -77,6 +77,9 @@ def cmd_serve(args: argparse.Namespace) -> None:
                 "storage.kv_backend": args.kv_backend,
                 "storage.redis_url": args.redis_url,
                 "sandbox.max_live_sessions": args.max_live_sessions,
+                "sandbox.driver": args.driver,
+                "sandbox.snapshot_mode": args.snapshot_mode,
+                "sandbox.snapshot_chain_max": args.snapshot_chain_max,
             },
         )
     except ConfigError as exc:
@@ -267,6 +270,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--redis-url", default=None, help="redis://[:pass@]host:port/db (with kv_backend=redis)")
     serve.add_argument("--max-live-sessions", type=int, default=None,
                        help="cap on concurrent live sessions (default: uncapped)")
+    serve.add_argument("--driver", default=None, choices=["process", "runsc"],
+                       help="sandbox substrate for this node (ADR-0012; default: process)")
+    serve.add_argument("--snapshot-mode", default=None, choices=["full", "delta"],
+                       help="snapshot encoding (ADR-0012; default: full)")
+    serve.add_argument("--snapshot-chain-max", type=int, default=None,
+                       help="delta chain compaction bound (default: 16)")
     serve.set_defaults(func=cmd_serve)
 
     config = sub.add_parser("config", help="configuration introspection (ADR-0009)")

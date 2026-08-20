@@ -70,6 +70,9 @@ _DEFAULTS: dict[str, Any] = {
     "storage.redis_url": None,
     "sandbox.max_live_sessions": None,
     "sandbox.resources": None,
+    "sandbox.driver": "process",
+    "sandbox.snapshot_mode": "full",
+    "sandbox.snapshot_chain_max": 16,
 }
 
 # section -> keys allowed inside it (ADR-0009 D4); unknown = hard error
@@ -77,7 +80,7 @@ _SCHEMA: dict[str, set[str]] = {
     "server": {"host", "port"},
     "runtime": {"data_dir", "repo_root", "api_key_env", "secret_key_env", "llm_upstream", "wheel_tick_ms", "warm_pool"},
     "storage": {"metadata_backend", "postgres_dsn", "kv_backend", "redis_url"},
-    "sandbox": {"max_live_sessions", "resources"},
+    "sandbox": {"max_live_sessions", "resources", "driver", "snapshot_mode", "snapshot_chain_max"},
 }
 
 _ENV_TO_KEY: dict[str, str] = {
@@ -94,9 +97,18 @@ _ENV_TO_KEY: dict[str, str] = {
     "WHIRLWIND_KV_BACKEND": "storage.kv_backend",
     "WHIRLWIND_REDIS_URL": "storage.redis_url",
     "WHIRLWIND_MAX_LIVE_SESSIONS": "sandbox.max_live_sessions",
+    "WHIRLWIND_SANDBOX_DRIVER": "sandbox.driver",
+    "WHIRLWIND_SNAPSHOT_MODE": "sandbox.snapshot_mode",
+    "WHIRLWIND_SNAPSHOT_CHAIN_MAX": "sandbox.snapshot_chain_max",
 }
 
-_INT_KEYS = {"server.port", "runtime.wheel_tick_ms", "sandbox.max_live_sessions"}
+_INT_KEYS = {"server.port", "runtime.wheel_tick_ms", "sandbox.max_live_sessions", "sandbox.snapshot_chain_max"}
+_ENUM_KEYS: dict[str, set[str]] = {
+    # closed value sets validated at load time (ADR-0012 D6); the caps-vs-mode
+    # cross-check lives in the composition root, which owns the driver
+    "sandbox.driver": {"process", "runsc"},
+    "sandbox.snapshot_mode": {"full", "delta"},
+}
 _STR_KEYS = {
     "server.host",
     "runtime.data_dir",
@@ -105,6 +117,8 @@ _STR_KEYS = {
     "runtime.llm_upstream",
     "storage.metadata_backend",
     "storage.kv_backend",
+    "sandbox.driver",
+    "sandbox.snapshot_mode",
 }
 _STR_OR_NONE_KEYS = {"runtime.repo_root", "storage.postgres_dsn", "storage.redis_url"}
 _RESOURCE_KEYS = {"mem_limit_mb", "cpu_seconds", "pids_max"}
@@ -167,6 +181,12 @@ def _validate(dotted: str, value: Any, layer: str) -> None:
     if dotted in _INT_KEYS:
         if isinstance(value, bool) or not isinstance(value, int):
             fail("an integer")
+        if dotted == "sandbox.snapshot_chain_max" and value < 1:
+            raise ConfigError(f"{layer}: {dotted} must be >= 1, got {value!r}")
+    elif dotted in _ENUM_KEYS:
+        allowed = _ENUM_KEYS[dotted]
+        if value not in allowed:
+            raise ConfigError(f"{layer}: {dotted} must be one of {sorted(allowed)}, got {value!r}")
     elif dotted in _STR_KEYS:
         if not isinstance(value, str):
             fail("a string")
@@ -262,6 +282,9 @@ def load_settings(
             else None
         ),
         max_live_sessions=values["sandbox.max_live_sessions"],
+        driver=values["sandbox.driver"],
+        snapshot_mode=values["sandbox.snapshot_mode"],
+        snapshot_chain_max=values["sandbox.snapshot_chain_max"],
     )
     server = ServerSettings(host=values["server.host"], port=values["server.port"])
     return Settings(server=server, runtime=runtime, config_path=resolved_path)
@@ -321,6 +344,9 @@ def render_toml(settings: Settings) -> str:
         lines.append(f"max_live_sessions = {runtime.max_live_sessions}")
     else:
         lines.append("# max_live_sessions: unset (uncapped)")
+    lines.append(f"driver = {_quote(runtime.driver)}")
+    lines.append(f"snapshot_mode = {_quote(runtime.snapshot_mode)}")
+    lines.append(f"snapshot_chain_max = {runtime.snapshot_chain_max}")
     resources = runtime.sandbox_resources
     if resources is not None:
         lines.append("")

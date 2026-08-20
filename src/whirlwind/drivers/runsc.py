@@ -394,7 +394,21 @@ class RunscDriver(SandboxDriver):
             raise DriverError(f"runsc resume failed ({rc}): {err.strip()}")
         self._instances[sandbox_id].paused = False
 
-    async def checkpoint(self, sandbox_id: str, kind: SnapshotKind) -> SnapshotArtifact:
+    async def checkpoint(
+        self,
+        sandbox_id: str,
+        kind: SnapshotKind,
+        *,
+        base: SnapshotArtifact | None = None,
+    ) -> SnapshotArtifact:
+        if base is not None:
+            # delta_snapshots=False in caps (ADR-0012 D1): refusing BEFORE any
+            # work (not even an instance lookup) is the honest behavior — a
+            # CRIU dump is not diffable as-is.
+            raise UnsupportedCapability(
+                "runsc driver does not support delta snapshots",
+                detail={"caps": "delta_snapshots=False"},
+            )
         instance = self.instance(sandbox_id)
         if self._snapshots_root is None:
             raise DriverError("driver has no snapshots_root configured")
@@ -433,6 +447,22 @@ class RunscDriver(SandboxDriver):
             f"runsc driver cannot take {kind} snapshots",
             detail={"supported": [SnapshotKind.FULL, SnapshotKind.DATA]},
         )
+
+    async def materialize(self, artifact: SnapshotArtifact, dest: Path) -> None:
+        """DATA artifacts are plain full trees (this driver never produces
+        deltas — caps honesty, ADR-0012 D1) so materialization is a copy.
+        FULL artifacts are CRIU image sets consumed by `runsc restore` in
+        create(); they are not tree-seedable and refuse honestly here."""
+        if artifact.kind != SnapshotKind.DATA or artifact.delta:
+            raise UnsupportedCapability(
+                f"runsc driver materializes full DATA trees only "
+                f"(kind={artifact.kind}, delta={artifact.delta})",
+                detail={"supported": [SnapshotKind.DATA]},
+            )
+        if not artifact.path.is_dir():
+            raise DriverError(f"snapshot artifact missing: {artifact.path}")
+        dest.mkdir(parents=True, exist_ok=True)
+        _copy_tree(artifact.path, dest)
 
     async def destroy(self, sandbox_id: str, grace_s: float = 5.0) -> None:
         instance = self.instance(sandbox_id)

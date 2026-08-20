@@ -63,6 +63,8 @@ class HostletConfig:
     llm_upstream: str = "https://api.deepseek.com"
     agent_boot_timeout_s: float = 30.0
     sandbox_resources: Resources | None = None  # per-sandbox ceilings (ADR-0005 D1)
+    snapshot_mode: str = "full"        # "full" | "delta" (ADR-0012 D4)
+    snapshot_chain_max: int = 16       # compaction bound in delta mode (ADR-0012 D4)
 
 
 @dataclass
@@ -92,6 +94,7 @@ def _as_artifact(snapshot: Snapshot) -> SnapshotArtifact:
         manifest=snapshot.manifest,
         size=snapshot.size,
         merkle=snapshot.merkle,
+        delta=bool(snapshot.manifest.get("delta", False)),
     )
 
 
@@ -200,10 +203,13 @@ class Hostlet:
             # Seed harness/user state from the snapshot BEFORE the fresh plan
             # files are written: the plan (ports, sandbox ids, workspace paths)
             # is per-sandbox and must win over the snapshot's stale copies.
+            # Seeding routes through the driver (ADR-0012 D3): delta artifacts
+            # carry a chain only their producing driver can reconstruct.
             artifact = _as_artifact(from_snapshot)
-            if not artifact.path.is_dir():
-                raise HostletError(f"snapshot artifact missing: {artifact.path}")
-            shutil.copytree(artifact.path, workspace, symlinks=True, dirs_exist_ok=True)
+            try:
+                await self.driver.materialize(artifact, workspace)
+            except WhirlwindError as exc:
+                raise HostletError(f"snapshot seed failed: {exc}") from exc
 
         # stage skills from the resource registry into the workspace
         skills: list[tuple[SkillRef, str]] = []
@@ -364,7 +370,10 @@ class Hostlet:
         record.status = SandboxStatus.SNAPSHOTTING
         await self.store.upsert_sandbox(record)
 
-        artifact = await self.driver.checkpoint(sandbox_id, SnapshotKind.DATA)
+        base_artifact = await self._delta_base(managed.session_id)
+        artifact = await self.driver.checkpoint(
+            sandbox_id, SnapshotKind.DATA, base=base_artifact
+        )
         snapshot = Snapshot(
             kind=SnapshotKind.DATA,
             subject=sandbox_id,
@@ -375,6 +384,9 @@ class Hostlet:
                 "harness": managed.harness,
                 "workspace": str(managed.workspace),
                 "files": artifact.manifest.get("files"),
+                "delta": artifact.delta,
+                "chain_depth": artifact.manifest.get("chain_depth", 0),
+                **({"base": artifact.manifest["base"]} if artifact.delta else {}),
             },
             location=str(artifact.path),
             size=artifact.size,
@@ -410,6 +422,27 @@ class Hostlet:
             previous.status = SandboxStatus.TERMINATED
             await self.store.upsert_sandbox(previous)
         return sandbox
+
+    async def _delta_base(self, session_id: str) -> SnapshotArtifact | None:
+        """Pick the delta base for suspend (ADR-0012 D4): the session's latest
+        DATA snapshot, when delta mode is on, the driver declares the
+        capability, and the chain stays under the compaction bound. Anything
+        else → None (full snapshot): first snapshot of a lineage, warm
+        sandboxes with no session, full mode, or the compaction point."""
+        if self.config.snapshot_mode != "delta" or not session_id:
+            return None
+        if not self.driver.capabilities().delta_snapshots:
+            # boot validation normally refuses this composition; the guard
+            # keeps direct wiring (tests, embedders) honest per-suspend too.
+            raise HostletError(
+                "snapshot_mode=delta but the driver does not declare delta_snapshots"
+            )
+        latest = await self.store.latest_session_snapshot(session_id)
+        if latest is None or latest.kind != SnapshotKind.DATA:
+            return None
+        if int(latest.manifest.get("chain_depth", 0)) >= self.config.snapshot_chain_max:
+            return None  # compaction: a full snapshot resets the chain
+        return _as_artifact(latest)
 
     def _get(self, sandbox_id: str) -> _ManagedSandbox:
         try:
