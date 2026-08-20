@@ -38,6 +38,7 @@
 - 沙箱内 `DEEPSEEK_API_KEY` 只是占位符 `whirlwind-relay`；真实凭证仅在 Hostlet SecretRelay，出网时替换 Authorization 头。
 - README / 架构文档已拆分 EN 与 zh-CN 两份（互链切换）；更新内容必须同步两份（AGENTS.md §5.5）。引用性能数字必须注明来源（ADR / 实测）。
 - **环境重置坑（2026-08-20 实录）**：容器重建后 runsc/busybox/PG 角色全丢；PG 的 `whirlwind_test` 库为镜像预置（owner=postgres），存在性检查会跳过 `createdb -O` → PG15+ public schema 权限拒绝（恢复命令：`ALTER DATABASE whirlwind_test OWNER TO whirlwind` + `GRANT ALL ON SCHEMA public TO whirlwind`）。zsh 无 `/dev/tcp` 重定向——TCP 探测用 `pg_isready`/`redis-cli ping`。
+- **GitHub token 无 `workflow` scope（2026-08-20 实录）**：当前 `github_token` 对 `Woody-Hu/whirlwind` 有 admin/push 权限，但**不能推送含 `.github/workflows/**` 的提交**（"PAT requires workflow scope"，GitHub 硬限制）。所以 CI workflow 暂不可落库。M4 真机验证改走 `scripts/setup/setup-kvm-linux.sh` 本地路径；用户若想恢复 CI，需要提供含 workflow scope 的新 token。
 - driver 的 Caps/Resources 必须如实上报（声明即执行）；已知无法诚实保证的维度不声明或在 docstring 写明 caveat。
 
 ## 决策索引

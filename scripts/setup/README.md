@@ -12,6 +12,7 @@ their own result at the end.
 | --- | --- | --- | --- |
 | `install-runsc.sh` | gVisor `runsc` (latest release, sha512-verified) + static busybox | **Linux only**, x86_64/aarch64（macOS 需在 Linux VM 内执行，如 colima） | `tests/integration/test_runsc_driver.py`（真实 gVisor 底座） |
 | `install-microsandbox.sh` | microsandbox `msb` CLI + libkrunfw guest kernel (pinned release, sha256-verified, segmented parallel download) | Linux x86_64/aarch64 (glibc ≥ 2.28) · macOS arm64 | `tests/integration/test_microsandbox_driver.py`（真实 libkrun 微 VM 底座——仍需宿主 KVM/HVF，见注记） |
+| `setup-kvm-linux.sh` | 启用 KVM（modprobe kvm/kvm_intel/kvm_amd + /dev/kvm 节点 + 诚实自验 open(2)）——**不"安装"软件，而是准备 kernel 能力** | **Linux only，root/CAP_SYS_ADMIN；在 VM 内需 L0 开嵌套虚拟化；不可在无特权容器里用** | microsandbox VM 门控测试的真机前置（见注记；macOS 走 HVF 无需本脚本） |
 | `install-postgres.sh` | PostgreSQL server + client + libpq headers | Ubuntu/Debian (apt) · RHEL/Fedora (dnf) · macOS (brew) | `whirlwind[postgres]` 集成测试 |
 | `install-redis.sh` | Redis server | Ubuntu/Debian (apt) · RHEL/Fedora (dnf) · macOS (brew) | `whirlwind[redis]` 集成测试 |
 
@@ -26,6 +27,10 @@ Notes / 注记：
   （宿主无 kvm 模块——mknod 无解，2026-08-20 实测），`msb doctor` 会如实报告
   "KVM access unavailable"，VM 生命周期测试诚实 skip；libkrun 无 TCG/QEMU 回退。
   macOS 需 Apple Silicon（HVF）；Intel mac 不支持。
+- **KVM 是 kernel 能力，不是可安装软件**：在有 KVM 的 Linux 真机（或开了嵌套虚拟化的
+  VM，root/CAP_SYS_ADMIN）上，先跑 `setup-kvm-linux.sh` 加载 kvm 模块并自验 open(2)，
+  再装 msb、跑 VM 门控测试。无特权容器内宿主管控若不透传 KVM，该脚本会**诚实拒绝**并
+  报错（不会假成功）——2026-08-20 在本容器验证了这条拒绝路径。
 - 安装后验证：`runsc --version`、`msb --version && msb doctor`、`pg_isready`、
   `redis-cli ping`，再经 runner 跑对应集成测试
   （`uv run python scripts/run_tests.py tests/integration/... -q`）。
