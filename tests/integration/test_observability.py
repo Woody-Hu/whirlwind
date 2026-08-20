@@ -20,6 +20,7 @@ import httpx
 import pytest
 import uvicorn
 
+from whirlwind.observability.trace import parse_traceparent
 from whirlwind.runtime import WhirlwindRuntime, RuntimeConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -95,6 +96,28 @@ async def test_request_counter_is_per_route(client: httpx.AsyncClient) -> None:
     assert _sample_value(
         metrics, 'whirlwind_http_requests_total{method="GET",route="/missing-route",status="404"}'
     ) == "1"
+
+
+async def test_trace_context_propagation(client: httpx.AsyncClient) -> None:
+    """An inbound traceparent is re-rooted via a child span echoed as the W3C
+    `traceresponse` header; a fresh request with no header still gets one."""
+    trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+    span_id = "00f067aa0ba902b7"
+    response = await client.get(
+        "/healthz", headers={"traceparent": f"00-{trace_id}-{span_id}-01"}
+    )
+    assert response.status_code == 200
+    echoed = response.headers.get("traceresponse")
+    assert echoed is not None and echoed.startswith("00-")
+    parts = echoed.split("-")
+    assert parts[1] == trace_id          # same trace as the caller
+    assert parts[2] != span_id          # but a fresh child span for our work
+
+    bare = await client.get("/healthz")
+    fresh = parse_traceparent(bare.headers.get("traceresponse"))
+    assert fresh is not None
+    assert len(fresh.trace_id) == 32      # started a fresh root trace
+    assert fresh.parent_span_id is None
 
 
 async def test_sessions_gauge_tracks_live_state(client: httpx.AsyncClient) -> None:

@@ -52,7 +52,7 @@ from whirlwind.gateway.mcp import McpGateway
 from whirlwind.harness.bundles import HarnessBundles
 from whirlwind.imaging import ImageRegistry, dsh_image_build, echo_image_build
 from whirlwind.observability.collector import MetricsCollector
-from whirlwind.observability.middleware import MetricsMiddleware, route_template
+from whirlwind.observability.middleware import MetricsMiddleware, TraceMiddleware, route_template
 from whirlwind.seam.catalog import SeamCatalog
 from whirlwind.seam.model import SeamRenderer
 from whirlwind.secrets import SecretBox, SecretBoxError, SecretNameError, validate_env_names
@@ -179,6 +179,11 @@ def create_app(
             await on_shutdown()
 
     app = FastAPI(title="whirlwind-gateway", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    # W3C trace correlation is always-on and cheap: it only reads the inbound
+    # `traceparent`, sets the request log scope, and echoes a `traceresponse`
+    # header (ADR-0013 P2.3). Added before the metrics wrapper so it is the
+    # innermost writer of the scope /response headers.
+    app.add_middleware(TraceMiddleware)
     if deps.kv is not None:
         app.add_middleware(IdempotencyMiddleware, kv=deps.kv)
     if deps.metrics is not None:
