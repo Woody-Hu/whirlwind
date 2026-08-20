@@ -48,7 +48,7 @@ class RuntimeConfig:
     redis_url: str | None = None
     sandbox_resources: Resources | None = None  # per-sandbox ceilings (ADR-0005 D1)
     max_live_sessions: int | None = None  # admission gate (ADR-0005 D2); None = uncapped
-    driver: str = "process"  # substrate pinning: "process" | "runsc" (ADR-0012 D5)
+    driver: str = "process"  # substrate pinning: "process" | "runsc" | "microsandbox" (ADR-0012 D5)
     snapshot_mode: str = "full"  # "full" | "delta" (ADR-0012 D4/D6)
     snapshot_chain_max: int = 16  # delta compaction bound (ADR-0012 D4)
 
@@ -90,8 +90,30 @@ def build_driver(config: RuntimeConfig) -> Any:
             snapshots_root=snapshots_root,
             work_root=config.data_dir / "runsc-work",
         )
+    if config.driver == "microsandbox":
+        import shutil as _shutil
+
+        from whirlwind.core.platform import current_facts
+        from whirlwind.drivers.microsandbox import MicrosandboxDriver, kvm_available
+
+        # Same honest-edge rule: binary via a real probe; on Linux the KVM
+        # backend is probed too (a node without a loaded host kvm module is
+        # ENODEV — fail at composition, not at first create; ADR-0006).
+        if not _shutil.which("msb"):
+            raise ValueError(
+                "driver='microsandbox' requires the msb binary on PATH "
+                "(install: scripts/setup/install-microsandbox.sh) — no "
+                "silent fallback to another substrate"
+            )
+        if current_facts().system == "linux" and not kvm_available():
+            raise ValueError(
+                "driver='microsandbox' requires a working /dev/kvm on Linux "
+                "(host kvm module loaded + device passthrough); msb is "
+                "libkrun-based with no TCG fallback — no silent fallback"
+            )
+        return MicrosandboxDriver(snapshots_root=snapshots_root)
     raise ValueError(
-        f"unknown driver {config.driver!r} (expected 'process' or 'runsc')"
+        f"unknown driver {config.driver!r} (expected 'process', 'runsc' or 'microsandbox')"
     )
 
 

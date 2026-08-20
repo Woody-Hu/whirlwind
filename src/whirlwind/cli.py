@@ -270,7 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--redis-url", default=None, help="redis://[:pass@]host:port/db (with kv_backend=redis)")
     serve.add_argument("--max-live-sessions", type=int, default=None,
                        help="cap on concurrent live sessions (default: uncapped)")
-    serve.add_argument("--driver", default=None, choices=["process", "runsc"],
+    serve.add_argument("--driver", default=None, choices=["process", "runsc", "microsandbox"],
                        help="sandbox substrate for this node (ADR-0012; default: process)")
     serve.add_argument("--snapshot-mode", default=None, choices=["full", "delta"],
                        help="snapshot encoding (ADR-0012; default: full)")

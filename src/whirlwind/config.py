@@ -106,7 +106,7 @@ _INT_KEYS = {"server.port", "runtime.wheel_tick_ms", "sandbox.max_live_sessions"
 _ENUM_KEYS: dict[str, set[str]] = {
     # closed value sets validated at load time (ADR-0012 D6); the caps-vs-mode
     # cross-check lives in the composition root, which owns the driver
-    "sandbox.driver": {"process", "runsc"},
+    "sandbox.driver": {"process", "runsc", "microsandbox"},
     "sandbox.snapshot_mode": {"full", "delta"},
 }
 _STR_KEYS = {

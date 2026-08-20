@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from whirlwind.core.platform import current_facts
 from whirlwind.runtime import RuntimeConfig, WhirlwindRuntime
 from whirlwind.storage.memory import MemoryKVStore, MemoryMetadataStore
 
@@ -46,3 +47,58 @@ def test_backend_without_driver_fails_actionably(tmp_path: Path, monkeypatch: py
     monkeypatch.setitem(sys.modules, "whirlwind.storage.redis", None)
     with pytest.raises(ValueError, match=r"pip install whirlwind\[redis\]"):
         WhirlwindRuntime(RuntimeConfig(data_dir=tmp_path, kv_backend="redis", redis_url="redis://x"))
+
+
+# -- microsandbox substrate composition (ADR-0006) -------------------------
+# These exercise the composition-root branch logic only (same level as the
+# sys.modules monkeypatches above): the probes are stubbed to force each
+# branch. The REAL backend verdict comes from the gated integration suite
+# (tests/integration/test_microsandbox_driver.py) — an honest skip where
+# /dev/kvm does not open.
+
+
+def _msb_probes(monkeypatch: pytest.MonkeyPatch, *, msb: bool, kvm: bool) -> None:
+    import shutil as _shutil
+
+    real_which = _shutil.which
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: (real_which(name) if (name != "msb" or msb) else None),
+    )
+    monkeypatch.setattr("whirlwind.drivers.microsandbox.kvm_available", lambda: kvm)
+
+
+def test_microsandbox_driver_requires_msb_binary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _msb_probes(monkeypatch, msb=False, kvm=True)
+    with pytest.raises(ValueError, match="msb binary"):
+        WhirlwindRuntime(RuntimeConfig(data_dir=tmp_path, driver="microsandbox"))
+
+
+@pytest.mark.skipif(
+    current_facts().system != "linux",
+    reason="the /dev/kvm requirement is Linux-only (macOS backend is HVF)",
+)
+def test_microsandbox_driver_requires_kvm_on_linux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _msb_probes(monkeypatch, msb=True, kvm=False)
+    with pytest.raises(ValueError, match="/dev/kvm"):
+        WhirlwindRuntime(RuntimeConfig(data_dir=tmp_path, driver="microsandbox"))
+
+
+def test_microsandbox_driver_constructs_when_backend_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from whirlwind.drivers import MicrosandboxDriver
+
+    _msb_probes(monkeypatch, msb=True, kvm=True)
+    runtime = WhirlwindRuntime(RuntimeConfig(data_dir=tmp_path, driver="microsandbox"))
+    assert isinstance(runtime.driver, MicrosandboxDriver)
+
+
+def test_microsandbox_rejects_delta_snapshot_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # caps-vs-mode cross-check lives at the composition root (ADR-0012 D6):
+    # the substrate truthfully reports delta_snapshots=False
+    _msb_probes(monkeypatch, msb=True, kvm=True)
+    with pytest.raises(ValueError, match="delta"):
+        WhirlwindRuntime(
+            RuntimeConfig(data_dir=tmp_path, driver="microsandbox", snapshot_mode="delta")
+        )
