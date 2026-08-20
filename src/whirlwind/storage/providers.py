@@ -21,6 +21,10 @@ from whirlwind.core import (
 )
 from whirlwind.core.events import Surface
 
+# Generic catalog-doc kinds (ADR-0011 D6): closed set validated by every
+# backend; new catalog entities ride the same seam with zero storage churn.
+CATALOG_KINDS = frozenset({"seam_template", "seam_instance", "harness_bundle"})
+
 
 @runtime_checkable
 class MetadataStore(Protocol):
@@ -58,6 +62,14 @@ class MetadataStore(Protocol):
 
     async def save_skill(self, name: str, version: str, archive: Path) -> SkillRef: ...
     async def skill_path(self, ref: SkillRef) -> Path | None: ...
+
+    # -- catalog docs (ADR-0011 D6): plain JSON documents addressed by kind+name;
+    #    typed validation lives in the domain wrappers (seam/catalog.py,
+    #    harness/bundles.py), the store stays generic on purpose.
+    async def put_catalog_doc(self, kind: str, doc: dict[str, Any]) -> None: ...
+    async def get_catalog_doc(self, kind: str, name: str) -> dict[str, Any] | None: ...
+    async def list_catalog_docs(self, kind: str) -> list[dict[str, Any]]: ...
+    async def delete_catalog_doc(self, kind: str, name: str) -> None: ...
 
 
 @runtime_checkable

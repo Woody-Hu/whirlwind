@@ -17,6 +17,7 @@ from whirlwind.core import (
     SkillRef,
 )
 from whirlwind.core.errors import Conflict, NotFound
+from whirlwind.storage.providers import CATALOG_KINDS
 from whirlwind.storage.skills import SkillArchives
 
 
@@ -31,6 +32,7 @@ class MemoryMetadataStore:
         self._sandboxes: dict[str, Sandbox] = {}
         self._snapshots: dict[str, list[Snapshot]] = {}  # session_id -> newest last
         self._crons: dict[str, CronJob] = {}
+        self._catalog: dict[str, dict[str, dict]] = {kind: {} for kind in CATALOG_KINDS}
         self._skills = SkillArchives(skills_dir) if skills_dir is not None else None
         self._lock = asyncio.Lock()
 
@@ -141,6 +143,30 @@ class MemoryMetadataStore:
         if self._skills is None:
             return None
         return self._skills.path(ref)
+
+    # -- catalog docs (ADR-0011 D6)
+
+    def _catalog_table(self, kind: str) -> dict[str, dict]:
+        try:
+            return self._catalog[kind]
+        except KeyError:
+            raise NotFound(f"unknown catalog kind {kind!r}") from None
+
+    async def put_catalog_doc(self, kind: str, doc: dict) -> None:
+        table = self._catalog_table(kind)
+        async with self._lock:
+            table[doc["name"]] = dict(doc)
+
+    async def get_catalog_doc(self, kind: str, name: str) -> dict | None:
+        doc = self._catalog_table(kind).get(name)
+        return dict(doc) if doc is not None else None
+
+    async def list_catalog_docs(self, kind: str) -> list[dict]:
+        return [dict(doc) for doc in self._catalog_table(kind).values()]
+
+    async def delete_catalog_doc(self, kind: str, name: str) -> None:
+        async with self._lock:
+            self._catalog_table(kind).pop(name, None)
 
 
 class MemorySecretStore:

@@ -10,15 +10,160 @@ Three roles, mirroring the DeepSeek Harness capability-seam design:
 The Renderer compiles an AgentVersion's declarations into an
 `InjectionManifest` — the intermediate format that crosses the sandbox boundary.
 Unknown seams or providers fail closed (SeamError), never silently degrade.
+
+ADR-0011 adds the packaging layer above the triple: SeamTemplate (a named,
+parameterized binding declaration with `${param}` placeholders) and
+SeamInstance (template + concrete params — the unit a sandbox binds). The
+substitution engine below is pure stdlib and store-free.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from whirlwind.core import AgentVersion, SeamBindingDecl, SeamError, SkillRef
+from whirlwind.core import (
+    AgentVersion,
+    SeamBindingDecl,
+    SeamError,
+    SeamParamSpec,
+    SeamTemplate,
+    SkillRef,
+)
+
+_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+_PARAM_TYPES: dict[str, tuple[type, ...]] = {
+    "string": (str,),
+    "int": (int,),
+    "number": (int, float),
+    "bool": (bool,),
+    "list": (list,),
+}
+
+
+def extract_placeholders(obj: Any) -> set[str]:
+    """Every `${name}` referenced anywhere in a template body (ADR-0011 D1)."""
+    found: set[str] = set()
+    if isinstance(obj, str):
+        found.update(_PLACEHOLDER.findall(obj))
+    elif isinstance(obj, dict):
+        for key, value in obj.items():
+            found.update(extract_placeholders(key))
+            found.update(extract_placeholders(value))
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            found.update(extract_placeholders(item))
+    return found
+
+
+def substitute(obj: Any, values: dict[str, Any]) -> Any:
+    """Deep `${param}` substitution (ADR-0011 D3).
+
+    A string that is EXACTLY one placeholder substitutes the value with its
+    native type (list stays a list, int stays an int); anything else embeds
+    `str(value)` — the Helm `--set` vs `--set-json` distinction.
+    """
+    if isinstance(obj, str):
+        whole = _PLACEHOLDER.fullmatch(obj)
+        if whole is not None:
+            name = whole.group(1)
+            if name in values:
+                return values[name]
+        def _repl(match: re.Match[str]) -> str:
+            name = match.group(1)
+            return str(values[name]) if name in values else match.group(0)
+        return _PLACEHOLDER.sub(_repl, obj)
+    if isinstance(obj, dict):
+        return {substitute(k, values): substitute(v, values) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [substitute(item, values) for item in obj]
+    return obj
+
+
+def validate_template_params(template: SeamTemplate, registry: "SeamRegistry") -> None:
+    """Registration-time validation (ADR-0011 D1): body placeholders must be
+    declared params, and seam/provider must exist in the same registry the
+    renderer uses — a template can never declare something unrenderable."""
+    seam = registry.seam(template.seam)
+    spec = registry.provider(template.provider)
+    if spec.seam != seam.id:
+        raise SeamError(
+            f"template {template.name!r}: provider {template.provider!r} implements "
+            f"{spec.seam!r}, not {template.seam!r}"
+        )
+    declared = {p.name: p for p in template.params}
+    if len(declared) != len(template.params):
+        raise SeamError(f"template {template.name!r}: duplicate param names")
+    for param in template.params:
+        if param.type not in _PARAM_TYPES:
+            raise SeamError(
+                f"template {template.name!r}: param {param.name!r} has unknown type "
+                f"{param.type!r} (want one of {sorted(_PARAM_TYPES)})"
+            )
+        if not param.required and param.default is None:
+            raise SeamError(
+                f"template {template.name!r}: optional param {param.name!r} needs a default"
+            )
+    body = {"policy": template.policy, "consumers": [c.model_dump() for c in template.consumers]}
+    referenced = extract_placeholders(body)
+    unknown = referenced - set(declared)
+    if unknown:
+        raise SeamError(
+            f"template {template.name!r} references undeclared params: {sorted(unknown)}"
+        )
+
+
+def resolve_params(template: SeamTemplate, params: dict[str, Any]) -> dict[str, Any]:
+    """Instance params against the template spec (ADR-0011 D3): unknown keys,
+    missing required-without-default, and type mismatches fail closed; the
+    returned dict is the effective param set with defaults applied."""
+    spec_by_name = {p.name: p for p in template.params}
+    unknown = set(params) - set(spec_by_name)
+    if unknown:
+        raise SeamError(
+            f"params not declared by template {template.name!r}: {sorted(unknown)}"
+        )
+    effective: dict[str, Any] = {}
+    for name, spec in spec_by_name.items():
+        if name in params:
+            value = params[name]
+        elif not spec.required:
+            value = spec.default
+        else:
+            raise SeamError(
+                f"template {template.name!r} requires param {name!r} (no default given)"
+            )
+        if not _matches_type(spec, value):
+            raise SeamError(
+                f"param {name!r} of template {template.name!r} wants {spec.type}, "
+                f"got {type(value).__name__} ({value!r})"
+            )
+        effective[name] = value
+    return effective
+
+
+def _matches_type(spec: SeamParamSpec, value: Any) -> bool:
+    if value is None:
+        return False  # an explicitly-passed None is never a valid param value
+    allowed = _PARAM_TYPES[spec.type]
+    if spec.type in ("int", "number") and isinstance(value, bool):
+        return False  # bool is an int subclass; refuse the silent coercion
+    return isinstance(value, allowed)
+
+
+def render_template(template: SeamTemplate, params: dict[str, Any]) -> SeamBindingDecl:
+    """Materialize a template + concrete params into a legacy inline decl."""
+    effective = resolve_params(template, params)
+    body = {
+        "seam": template.seam,
+        "provider": template.provider,
+        "policy": substitute(template.policy, effective),
+        "consumers": substitute([c.model_dump() for c in template.consumers], effective),
+    }
+    return SeamBindingDecl.model_validate(body)
 
 
 class SeamTool(BaseModel):
@@ -57,6 +202,9 @@ class SeamBinding(BaseModel):
     provider: str
     policy: dict[str, Any]
     consumers: list[SeamConsumer]
+    # Which SeamInstance materialized this binding (ADR-0011 D2); empty for
+    # inline declarations. The manifest answers "which instance produced this".
+    instance: str = ""
 
 
 class SkillInjection(BaseModel):
@@ -254,7 +402,13 @@ class SeamRenderer:
                 for c in decl.consumers
             ] or [SeamConsumer(harness=version.harness, mode="native")]
             rendered.append(
-                SeamBinding(seam=decl.seam, provider=decl.provider, policy=policy, consumers=consumers)
+                SeamBinding(
+                    seam=decl.seam,
+                    provider=decl.provider,
+                    policy=policy,
+                    consumers=consumers,
+                    instance=decl.instance,
+                )
             )
         return rendered
 
