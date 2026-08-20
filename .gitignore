@@ -17,3 +17,6 @@ refs/
 
 # test-runner logs (ADR-0008, disposable dev artifacts)
 .test-logs/
+
+# local backend run artifacts (e.g. redis-server launched from repo cwd)
+dump.rdb
