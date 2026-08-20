@@ -34,8 +34,8 @@ Gateway (REST + SSE + MCP)          接入层：会话 / 事件流 / cron / 镜�
 
 ### 1.3 演进状态
 
-- **已落地**：M1 单进程竖切（process driver、echo/dsh adapter、Seam renderer、REST+SSE+MCP、CLI）；M2 全生命周期（suspend/resume、warm 池 CAS、时间轮 cron）；M3 部分（runsc driver 真实 gVisor 全生命周期验证、TCP/UDS/vsock 传输、durable WAL EventLog）；P0（croniter/PyYAML 成熟库、PostgreSQL/Redis provider）；P1 除 auth 外（资源限制、会话配额、幂等键、k3s 部署、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011、delta 快照 + 底座钉选 ADR-0012）；平台抽象（ADR-0007：PlatformFacts + platform_impl 行为插件）与测试运行器（ADR-0008：日志落盘 + 控制台简要结论）；microsandbox 第三 VM 底座（[ADR-0006](docs/adr/0006-microsandbox-driver.md) Implemented：msb CLI 封装 + 装配 + 门控测试；真实 VM 生命周期验证待 KVM/HVF 宿主）。
-- **已定稿待实施**：无（microsandbox 已于 2026-08-20 落地，遗留真实后端验证见 TODO P3.5 M4）。
+- **已落地**：M1 单进程竖切（process driver、echo/dsh adapter、Seam renderer、REST+SSE+MCP、CLI）；M2 全生命周期（suspend/resume、warm 池 CAS、时间轮 cron）；M3 部分（runsc driver 真实 gVisor 全生命周期验证、TCP/UDS/vsock 传输、durable WAL EventLog）；P0（croniter/PyYAML 成熟库、PostgreSQL/Redis provider）；P1 除 auth 外（资源限制、会话配额、幂等键、k3s 部署、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011、delta 快照 + 底座钉选 ADR-0012）；平台抽象（ADR-0007：PlatformFacts + platform_impl 行为插件）与测试运行器（ADR-0008：日志落盘 + 控制台简要结论）；microsandbox 第三 VM 底座（[ADR-0006](docs/adr/0006-microsandbox-driver.md) Implemented + M4 verified：msb CLI 封装 + 装配 + 门控测试 + benchmark；2026-08-20 已在 Apple Silicon mac 上真实跑通 HVF 生命周期）。
+- **已定稿待实施**：无（microsandbox 已于 2026-08-20 落地，真实后端验证亦已完成——见 [docs/TODO.md](docs/TODO.md) P3.5 与 ADR-0006 验证记录）。
 - **进行中/待办**：见 [docs/TODO.md](docs/TODO.md)（活文档，随每个自闭环变更增量维护）。
 
 ---
@@ -57,7 +57,7 @@ whirlwind/
 │   │   ├── 0003-mature-libs.md          # cron→croniter、YAML→PyYAML 成熟库替换
 │   │   ├── 0004-production-storage.md   # PostgreSQL MetadataStore、Redis KV/Locks、后端选择
 │   │   ├── 0005-edge-hardening.md       # 沙箱资源限制、会话配额、幂等键、k3s 部署
-│   │   ├── 0006-microsandbox-driver.md  # libkrun/krunkit 第三 VM 底座（定稿待实施）
+│   │   ├── 0006-microsandbox-driver.md  # libkrun/krunkit 第三 VM 底座（已实施 + Apple Silicon HVF 验证）
 │   │   ├── 0007-platform-abstraction.md # 平台抽象：PlatformFacts + WHIRLWIND_PLATFORM + 行为插件
 │   │   ├── 0008-test-logging.md         # 测试执行日志：runner 落盘 + junit 摘要 + 简要结论
 │   │   ├── 0009-unified-config.md       # 统一配置：单一 TOML + 分层注入（file < env < CLI）
@@ -84,7 +84,7 @@ whirlwind/
 │   │   ├── base.py                      # SandboxDriver Protocol + Caps / SandboxSpec / Resources / Instance
 │   │   ├── process.py                   # 进程组 driver（macOS/Linux，M1 默认）
 │   │   ├── runsc.py                     # gVisor driver（Linux，FULL 快照/checkpoint）
-│   │   └── microsandbox.py              # libkrun/krunkit driver（LIGHT_VM，mac 本地 VM 底座；ADR-0006，定稿待实施）
+│   │   └── microsandbox.py              # libkrun/krunkit driver（LIGHT_VM，mac 本地 VM 底座；ADR-0006，已实施 + Apple Silicon HVF 验证）
 │   ├── transport/                   # 传输抽象：endpoints.py 解析 + transports.py connect/serve（tcp/unix/vsock）
 │   ├── hostlet/                     # 节点代理：沙箱生命周期编排 + SecretRelay（凭证出网替换）
 │   ├── agent/                       # SandboxAgent：沙箱内首进程（stdlib asyncio HTTP，无重框架）
@@ -357,7 +357,7 @@ ADR 需覆盖的设计维度（按需取舍，至少明确其一）：
 - **后端切换**：`whirlwind serve --metadata-backend postgres --kv-backend redis` 或经 `[storage]` 配置分区（需 `whirlwind[postgres]` / `whirlwind[redis]` extras）
 - **生产后端依赖**：PostgreSQL / Redis 需本地可达；`tests/integration/conftest.py` 探测，不可达即 skip
 - **gVisor**：`runsc` 仅 Linux；无二进制或受限容器（无 `CAP_SYS_ADMIN`）自动降级 rootless + `--network=none`（rootless 不支持 restore，上游限制）；也验证过可装在 colima 的 Linux Docker VM 内作为 Docker runtime
-- **microsandbox**：libkrun 微 VM（`Isolation.LIGHT_VM`），驱动封装 `msb` CLI（安装：`scripts/setup/install-microsandbox.sh`，msb 0.6.12 已验证）；Linux 需真实 `/dev/kvm`（宿主 kvm 模块 + 透传，open(2) 成功才算——本容器节点存在但 ENODEV，VM 测试诚实 skip）；macOS 需 Apple Silicon（HVF）；libkrun 无 TCG 回退（ADR-0006）
+- **microsandbox**：libkrun 微 VM（`Isolation.LIGHT_VM`），驱动封装 `msb` CLI（安装：`scripts/setup/install-microsandbox.sh`，msb 0.6.8 macOS / 0.6.12 Linux 已验证）。**macOS（Apple Silicon HVF）已真实跑通生命周期套件 + benchmark（2026-08-20，19/19）**。Linux 需真实 `/dev/kvm`（宿主 kvm 模块 + 透传，open(2) 成功才算；libkrun 无 TCG 回退）。实测要点：`/tmp` 是 macOS 符号链接（bundle_root 必须 resolve、驱动已做）；msb 二进制符号链接影响 libkrunfw 查找（驱动已 resolve）；`MSB_HOME` 重定向到空目录会丢失 libkrunfw，驱动用解析后的二进制路径规避；`msb run --detach` 返回即 guest 就绪；驱动恒传 `--replace` 防静默复用陈旧 VM。详见 [ADR-0006](docs/adr/0006-microsandbox-driver.md)（ADR-0006）
 - **k3s / macOS**：`colima start --kubernetes`（底层 k3s）即为本地集群；无头沙箱里"不支持"多为执行环境假象，应先在真机/CLI 验证再下结论
 - **dsh**：公开仓库 `github.com/deepseek-ai/deepseek-harness`（MIT）；镜像构建需本地 checkout（`refs/deepseek-harness`，可用 `WHIRLWIND_DSH_REPO` 覆盖）；两个 Python 包均不在 PyPI
 - **平台事实/模拟**：平台判断统一走 `core/platform`（ADR-0007）；`WHIRLWIND_PLATFORM=macos|linux|windows[/machine]` 仅模拟身份与派生语义，探测类事实（`/dev/vsock`、`CAP_SYS_ADMIN`）永不被覆盖，生产环境不设置

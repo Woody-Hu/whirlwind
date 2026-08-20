@@ -2,12 +2,12 @@
 
 # ADR-0006：Microsandbox driver——`SandboxDriver` 接口上一个可本地测试的 VM 底座
 
-- Status: Implemented — M1 driver / M2 wiring / M3 gated tests landed 2026-08-20; real-VM lifecycle verification still pending a KVM/HVF-capable host (see Implementation record below)
-- Date: 2026-08-19 (design) / 2026-08-20 (implementation)
+- Status: Implemented — M1 driver / M2 wiring / M3 gated tests landed 2026-08-20; **M4 real-VM lifecycle verified 2026-08-20 on Apple Silicon (HVF)** — the gated lifecycle suite + benchmarks now run for real on macOS (see Implementation record below)
+- Date: 2026-08-19 (design) / 2026-08-20 (implementation + verification)
 - Related: [ADR-0001](0001-agent-runtime-m1.md) (driver seam D2), [ADR-0002](0002-m3-substrates.md) (runsc/gVisor), [ADR-0005](0005-edge-hardening.md) (resource ceilings), [ADR-0007](0007-platform-abstraction.md) (platform facts), [TODO](../TODO.md) P3.4/P3.5
 
-- 状态：已实施——M1 驱动 / M2 装配 / M3 门控测试于 2026-08-20 落地；真实 VM 生命周期验证仍待有 KVM/HVF 的宿主（见下方实施记录）
-- 日期：2026-08-19（设计）/ 2026-08-20（实施）
+- 状态：已实施——M1 驱动 / M2 装配 / M3 门控测试于 2026-08-20 落地；**M4 真实 VM 生命周期已于 2026-08-20 在 Apple Silicon（HVF）上验证**——门控生命周期套件与 benchmark 现已在 macOS 上真实运行（见下方实施记录）
+- 日期：2026-08-19（设计）/ 2026-08-20（实施 + 验证）
 - 关联：[ADR-0001](0001-agent-runtime-m1.md)（driver 接缝 D2）、[ADR-0002](0002-m3-substrates.md)（runsc/gVisor）、[ADR-0005](0005-edge-hardening.md)（资源上限）、[ADR-0007](0007-platform-abstraction.md)（平台事实）、[TODO](../TODO.md) P3.4/P3.5
 
 ---
@@ -215,11 +215,13 @@ microsandbox` option) the same way P0 already swaps storage backends.
 - `net_policy=False`: msb ships programmable networking; this driver wires none of it.
 - `density=MEDIUM`: one microVM (own kernel + memory) per sandbox.
 
-**What is still pending / 仍待完成：** the two gated lifecycle tests have not executed on
+**What is still pending / 仍待完成：** ~~the two gated lifecycle tests have not executed on
 a real backend — the dev container's `/dev/kvm` node exists but open(2) fails ENODEV
 (host kvm module not loaded; `msb doctor` agrees: "KVM access unavailable"). They are
-written and waiting for a KVM-capable Linux host or an Apple-Silicon mac (HVF). Per the
-honesty rule above, `snapshot_full` stays `False` until a real restore passes there.
+written and waiting for a KVM-capable Linux host or an Apple-Silicon mac (HVF).~~ **RESOLVED
+2026-08-20: executed for real on an Apple-Silicon mac (HVF).** The Linux-KVM path remains
+unexecuted on this project (no such host yet), so `snapshot_full` stays `False` until a
+real restore passes on whatever backend runs it.
 
 - **与 D1 措辞的偏差——驱动封装的是 `msb` CLI，而非裸 krun/krunkit。** 上方开放点
   （"spike 敲定确切调用方式"）的裁决是：裸 libkrun 是 C 库、没有沙箱生命周期面；
@@ -260,3 +262,87 @@ honesty rule above, `snapshot_full` stays `False` until a real restore passes th
 节点存在但 open(2) 返回 ENODEV（宿主 kvm 模块未加载；`msb doctor` 同样报告
 "KVM access unavailable"）。它们已写好，等待有 KVM 的 Linux 宿主或 Apple Silicon mac
 （HVF）。按上述诚实规则，`snapshot_full` 在真实 restore 通过前保持 `False`。
+**2026-08-20 已在 Apple Silicon mac（HVF）上真实执行并解决**；Linux-KVM 路径在本项目
+尚未执行（暂无该宿主），`snapshot_full` 在任意后端上有通过的 restore 测试前保持 `False`。
+
+---
+
+## Verification record — real microVM lifecycle on Apple Silicon (2026-08-20)
+
+## 验证记录——Apple Silicon 上的真实 microVM 生命周期（2026-08-20）
+
+Session-log: `docs/session-logs/2026-08-20-microsandbox-mac-verification.md`. First real
+execution of the M4 gated suite (previously skipped: the dev container's `/dev/kvm`
+failed open(2) with ENODEV). Environment: macOS arm64, msb **0.6.8** (not 0.6.12), HVF
+backend (`msb doctor` ✓), guest payload = busybox rootfs exported from a local docker
+image (the guest is Linux regardless of the host).
+
+- **Lifecycle suite now runs for real**: 19/19 passed in
+  `tests/integration/test_microsandbox_driver.py` + `tests/benchmark/test_microsandbox_bench.py`
+  (13 unconditional render/caps/refusal + 3 real-VM lifecycle + 3 benchmarks), including
+  a new `test_create_replaces_stale_record`.
+- **Finding — spec-honesty trap in `msb run` without `--replace` (probed, 0.6.8):** a
+  `msb run` against an already-known name does NOT fail — it warns and silently REUSES
+  the existing sandbox with creation flags (env/bundle/resources) ignored. A stale store
+  record from a crashed run would therefore make `create()` silently return an old VM
+  that does not match the requested spec. **Fix: the driver now always passes `--replace`
+  to `msb run`**, so `create()` enforces the requested spec (a stale record is replaced,
+  not reused); verified observable via guest env swap (MARKER=first→second).
+- **Cross-platform path findings (macOS):**
+  - `/tmp` is a symlink to `/private/tmp`; the msb VM opens the image with
+    `follow_root_symlinks=false`, so a symlinked bundle path fails in-guest with ENOTDIR
+    — the driver resolves `bundle_root` (same discipline as runsc's OCI bind source).
+  - `msb` (e.g. `~/.local/bin/msb`) is often a symlink to the real install dir; libkrunfw
+    is resolved binary-relative, so the driver resolves the binary path through symlinks.
+  - **`MSB_HOME` must not be redirected to an empty dir**: libkrunfw is also looked up
+    under `MSB_HOME/lib`. In the TRAE sandbox the default `~/.microsandbox` store writes
+    were blocked, so the verification runs use `MSB_HOME=/tmp/whirlwind-msb-home`; the
+    driver's resolved-binary lookup keeps libkrunfw discoverable (verified with the
+    resolved binary `~/.microsandbox/bin/msb`).
+  - `msb run --detach` returns only when the guest is actually ready: the very first
+    `msb exec` right after create succeeds at steady-state latency (probed: run=182ms,
+    first exec=23ms vs steady ~20ms). No readiness wait-loop is needed in the driver.
+- **Benchmarks (first session, real HVF, msb 0.6.8, Apple Silicon):**
+  - cold start (create only, 10 rounds): p50=**116ms** p90=139ms min=108ms max=139ms
+    (the earlier 175ms figure included destroy in the same timed section — the benchmark
+    now times create() alone, matching the "sandbox-creation budget" contract);
+  - exec latency (10 rounds): p50=**11ms** p90=14ms min=10ms max=14ms;
+  - DATA checkpoint (~1MiB workspace, 10 rounds): p50=**1ms** (host-side copy+merkle).
+  - Acceptance lines set with ~3x headroom over the observed max (500/50/50 ms).
+- **Regression**: full not-e2e suite on this mac = 336 passed / 26 skipped (skips all
+  environment facts: no local PG/k3s/runsc/vsock; RLIMIT_AS honest macOS fact).
+
+- 会话日志：`docs/session-logs/2026-08-20-microsandbox-mac-verification.md`。M4 门控套件
+  的首次真实执行（此前跳过：开发容器 `/dev/kvm` open(2) 返回 ENODEV）。环境：macOS
+  arm64、msb **0.6.8**（非 0.6.12）、HVF 后端（`msb doctor` ✓）、guest 载荷 = 从本地
+  docker 镜像导出的 busybox rootfs（无论宿主如何，guest 都是 Linux）。
+- **生命周期套件现已真实运行**：`tests/integration/test_microsandbox_driver.py` +
+  `tests/benchmark/test_microsandbox_bench.py` 19/19 通过（13 无条件渲染/能力/拒绝 +
+  3 真实 VM 生命周期 + 3 benchmark），含新增 `test_create_replaces_stale_record`。
+- **发现——不带 `--replace` 时 `msb run` 的 spec 诚实性陷阱（0.6.8 实测）：** 对已存在
+  名称的 `msb run` 不会失败——它警告并**静默复用**既有沙箱（env/bundle/resources 等
+  创建标志被忽略）。崩溃遗留的陈旧 store 记录会让 `create()` 静默返回一个不符合请求
+  spec 的旧 VM。**修复：驱动现在始终向 `msb run` 传 `--replace`**，使 `create()` 强制
+  执行请求的 spec（陈旧记录被替换而非复用）；经 guest env 交换（MARKER=first→second）
+  可观测验证。
+- **跨平台路径发现（macOS）：**
+  - `/tmp` 是指向 `/private/tmp` 的符号链接；msb VM 以 `follow_root_symlinks=false` 打开
+    镜像，符号链接的 bundle 路径会在 guest 内 ENOTDIR 失败——驱动解析 `bundle_root`
+    （与 runsc 的 OCI bind 源同一纪律）。
+  - `msb`（如 `~/.local/bin/msb`）常是指向真实安装目录的符号链接；libkrunfw 按
+    binary-relative 解析，故驱动将二进制路径透过符号链接解析到真实路径。
+  - **不得把 `MSB_HOME` 重定向到空目录**：libkrunfw 也会在 `MSB_HOME/lib` 下查找。
+    TRAE 沙箱中默认 `~/.microsandbox` store 写入被拦截，故验证运行使用
+    `MSB_HOME=/tmp/whirlwind-msb-home`；驱动对二进制真实路径的查找仍可发现 libkrunfw
+    （用解析后的二进制 `~/.microsandbox/bin/msb` 验证）。
+  - `msb run --detach` 仅在 guest 真正就绪时返回：create 后第一次 `msb exec` 即以稳态
+    延迟成功（实测：run=182ms、首次 exec=23ms vs 稳态 ~20ms）。驱动无需就绪等待循环。
+- **Benchmark（首次 session，真实 HVF，msb 0.6.8，Apple Silicon）：**
+  - 冷启动（仅 create，10 轮）：p50=**116ms** p90=139ms min=108ms max=139ms
+    （此前的 175ms 把 destroy 也算进了同一计时段——benchmark 现在只对 create() 计时，
+    符合"沙箱创建预算"契约）；
+  - exec 延迟（10 轮）：p50=**11ms** p90=14ms min=10ms max=14ms；
+  - DATA checkpoint（~1MiB workspace，10 轮）：p50=**1ms**（宿主侧拷贝+merkle）。
+  - 验收线按观测 max 的 ~3 倍余量设定（500/50/50 ms）。
+- **回归**：本 mac 全量 not-e2e 套件 = 336 passed / 26 skipped（skip 均为环境事实：
+  无本地 PG/k3s/runsc/vsock；RLIMIT_AS 为 macOS 诚实事实）。

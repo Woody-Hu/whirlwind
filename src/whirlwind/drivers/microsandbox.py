@@ -18,7 +18,8 @@ driver's integration level:
   root (the exact contract of the process driver — the workspace is a host
   directory by construction, so no VM interaction is involved).
 
-Capability honesty (probed against the real `msb` 0.6.12 CLI, 2026-08-20):
+Capability honesty (probed against the real `msb` CLI; 0.6.12 on Linux and
+0.6.8 on macOS, both 2026-08-20):
 - `snapshot_full=False`: `msb snapshot create --resumable` — the only
   memory-state surface — returns an explicit unsupported-feature error in
   v0.6.x ("reserved by the public contract"). Flipping this bit requires a
@@ -31,6 +32,14 @@ Capability honesty (probed against the real `msb` 0.6.12 CLI, 2026-08-20):
   wires none of it — nothing is claimed that is not enforced.
 - `density=MEDIUM`: one microVM (own kernel + memory) per sandbox, unlike
   the shared-kernel process/runsc substrates.
+
+Lifecycle is verified for real on an Apple-Silicon mac (HVF) 2026-08-20
+(integration suite + benchmarks; see ADR-0006 verification record).
+`msb run --detach` returns only when the guest is ready — the first exec
+after create hits steady-state latency, so no readiness wait-loop is needed.
+`--replace` is mandatory on `msb run`: without it a stale store record makes
+msb silently REUSE the old VM with creation flags ignored (spec-honesty
+trap — verified on 0.6.8).
 
 Linux runtime prerequisite (not installable): a real `/dev/kvm` backed by
 a loaded host kvm module. A node without the module fails open(2) with
@@ -114,20 +123,32 @@ def _render_run_argv(spec: SandboxSpec) -> list[str]:
 
         msb run <bundle_root> --name <id> [-m <N>M] [--rlimit nproc=N]
                 [--rlimit cpu=N] [-e K=V]... --mount-dir <ws>:/workspace
-                -w /workspace --no-tty --detach -- <argv...>
+                -w /workspace --no-tty --detach --replace -- <argv...>
 
     Resource mapping: mem_limit_mb is the VM memory allocation (`-m`, a
     genuine physical cap — stronger than the process driver's RLIMIT_AS);
     pids_max / cpu_seconds map to in-guest POSIX rlimits. Caveat: the
     rlimit surface is accepted by the CLI but only validated where the
     backend actually runs (gated integration suite).
+
+    --replace is unconditionally added: it enforces the requested spec
+    even when the msb shared store already has this name (a stale record
+    would otherwise be silently reused, violating spec-honesty). The default
+    replace-timeout (10s) is fine for our lifecycle.
     """
     if not spec.argv:
         raise DriverError("sandbox spec requires a launcher argv")
+    # The bundle root is handed to msb as the VM root filesystem. Resolve to a
+    # real path first: on macOS `/tmp` is a symlink to `/private/tmp`, and the
+    # msb runtime opens the image with follow_root_symlinks=false — a symlinked
+    # bundle path fails inside the VM with ENOTDIR. Same discipline as the runsc
+    # driver's `bundle_root.resolve()` in the OCI bind source (real path is what
+    # the kernel sees). resolve() is a no-op on already-canonical Linux paths.
+    bundle_root = spec.bundle_root.resolve()
     argv: list[str] = [
-        "run", str(spec.bundle_root),
+        "run", str(bundle_root),
         "--name", spec.sandbox_id,
-        "--no-tty", "--detach",
+        "--no-tty", "--detach", "--replace",
         "--mount-dir", f"{spec.workspace.resolve()}:{_WORKSPACE_MOUNT}",
         "-w", _WORKSPACE_MOUNT,
     ]
@@ -140,7 +161,7 @@ def _render_run_argv(spec: SandboxSpec) -> list[str]:
         argv += ["--rlimit", f"cpu={res.cpu_seconds}"]
     for key, value in spec.env.items():
         argv += ["-e", f"{key}={value}"]
-    argv += ["--", _guest_path(spec.bundle_root, spec.argv[0]), *spec.argv[1:]]
+    argv += ["--", _guest_path(bundle_root, spec.argv[0]), *spec.argv[1:]]
     return argv
 
 
@@ -197,7 +218,15 @@ class MicrosandboxDriver(SandboxDriver):
         msb_bin: str = "msb",
         snapshots_root: Path | None = None,
     ) -> None:
-        self._msb_bin = msb_bin
+        # Resolve the binary path through symlinks: msb ships beside libkrunfw
+        # and resolves it via binary-relative lookup. A symlinked PATH entry
+        # (e.g. ~/.local/bin/msb → ~/.microsandbox/bin/msb) would make it
+        # search the wrong directory for libkrunfw. resolve() gives the real
+        # path so the shipped-relative search works.
+        resolved = shutil.which(msb_bin)
+        if resolved is not None:
+            resolved = str(Path(resolved).resolve())
+        self._msb_bin = resolved or msb_bin
         self._snapshots_root = snapshots_root
         self._instances: dict[str, Instance] = {}
 

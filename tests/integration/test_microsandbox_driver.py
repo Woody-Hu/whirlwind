@@ -14,9 +14,12 @@ probe's verdict as the reason — an honest skip, never a fake backend.
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
+import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -45,6 +48,13 @@ from whirlwind.drivers.microsandbox import (
 HAS_MSB = shutil.which("msb") is not None
 # Linux needs a KVM backend that really opens; macOS needs Apple Silicon.
 BACKEND_OK = current_facts().system != "linux" or kvm_available()
+# The lifecycle tests boot a REAL Linux microVM; the launcher payload must be a
+# Linux executable. On macOS the host interpreter is useless inside the guest, so
+# the bootable rootfs is exported from a local docker busybox image — the
+# sanctioned test-validation path (MEMORY env facts). Pure render/caps tests stay
+# platform-portable and never need this.
+DOCKER = shutil.which("docker")
+MSB_TEST_IMAGE = os.environ.get("MSB_TEST_IMAGE", "rancher/mirrored-library-busybox:1.36.1")
 
 MSB_REQUIRED = pytest.mark.skipif(
     not (HAS_MSB and BACKEND_OK),
@@ -99,6 +109,68 @@ def _register(driver: MicrosandboxDriver, spec: SandboxSpec) -> None:
     )
 
 
+def _boot_spec(tmp_path: Path, sandbox_id: str) -> SandboxSpec | None:
+    """A bootable Linux rootfs bundle for the real microVM lifecycle tests.
+
+    The guest is Linux regardless of the host, so the launcher must be a Linux
+    binary. A minimal glibc busybox rootfs is exported from a local docker image
+    (linux/arm64 here; the image is cached on this machine) and used as the msb
+    image — the same `./rootfs` local-directory image form the driver targets.
+    Returns None when docker or the image is unavailable (honest skip, never a
+    stub rootfs). The bundle must be a resolved real path: macOS `/tmp` is a
+    symlink to `/private/tmp` and the msb VM opens the image with
+    follow_root_symlinks=false (ENOTDIR otherwise — first real-run finding).
+    """
+    if DOCKER is None:
+        return None
+    bundle = tmp_path / "bundle"
+    bundle.mkdir(parents=True, exist_ok=True)
+    try:
+        cid = subprocess.run(
+            [DOCKER, "create", MSB_TEST_IMAGE], capture_output=True, check=True, timeout=90
+        ).stdout.decode().strip()
+        try:
+            export = subprocess.run(
+                [DOCKER, "export", cid], capture_output=True, check=True, timeout=180
+            ).stdout
+        finally:
+            subprocess.run([DOCKER, "rm", cid], capture_output=True, check=True, timeout=60)
+        with tarfile.open(fileobj=io.BytesIO(export), mode="r:") as tf:
+            # fully_trusted = legacy no-filter semantics, made explicit for
+            # Python 3.14 (the default "data" filter rejects this rootfs's
+            # absolute symlinks, e.g. /etc/mtab -> /proc/mounts). Payload is a
+            # trusted local busybox image, so full metadata/links are fine.
+            tf.extractall(bundle, filter="fully_trusted")
+    except (subprocess.CalledProcessError, OSError, tarfile.TarError) as exc:
+        return None
+    busybox = bundle / "bin" / "busybox"
+    if not busybox.is_file():
+        return None
+    return SandboxSpec(
+        sandbox_id=sandbox_id,
+        # direct applet invocation (`busybox sleep 300`), NOT `sh -c ...` — the
+        # busybox rootfs has no applet symlinks on PATH (runsc test lesson).
+        argv=[str(busybox), "sleep", "300"],
+        bundle_root=bundle,
+        workspace=tmp_path / "sandboxes" / sandbox_id,
+        env={"PATH": "/bin:/usr/bin"},
+    )
+
+
+def _msb_cleanup(name: str) -> None:
+    """Best-effort drop of a stale sandbox record from the shared msb store.
+
+    In msb 0.6.x a `msb run` against an already-known name does NOT fail —
+    it warns and silently REUSES the existing sandbox with creation flags
+    ignored (spec-honesty trap). The driver now passes `--replace` so
+    create() always enforces the requested spec; this helper remains for
+    callers that invoke `msb` directly and want a fresh store state
+    (idempotent-when-absent if we ignore its error)."""
+    if not HAS_MSB:
+        return
+    subprocess.run(["msb", "remove", "--force", name], capture_output=True, timeout=60)
+
+
 # ------------------------------------------------------ capability honesty
 
 
@@ -120,9 +192,10 @@ def test_render_run_argv_maps_spec_to_msb_invocation(tmp_path: Path) -> None:
 
     argv = _render_run_argv(spec)
 
-    # the image bundle directory is the msb image (becomes the VM root fs)
+    # the image bundle directory is the msb image (becomes the VM root fs);
+    # the driver resolves it to a real path (macOS /tmp symlink — see _render_run_argv)
     assert argv[0] == "run"
-    assert argv[1] == str(spec.bundle_root)
+    assert argv[1] == str(spec.bundle_root.resolve())
     # resource mapping: VM memory + in-guest POSIX rlimits
     assert "-m" in argv and argv[argv.index("-m") + 1] == "512M"
     assert argv.count("--rlimit") == 2
@@ -135,8 +208,9 @@ def test_render_run_argv_maps_spec_to_msb_invocation(tmp_path: Path) -> None:
     # env whitelist is exact
     i = argv.index("-e")
     assert argv[i + 1] == "WHIRLWIND_SANDBOX_ID=sbx_1"
-    # detached, non-interactive
-    assert "--detach" in argv and "--no-tty" in argv
+    # detached, non-interactive, and --replace so a stale store record is
+    # replaced rather than silently reused (creation flags ignored otherwise)
+    assert "--detach" in argv and "--no-tty" in argv and "--replace" in argv
     # launcher translated from host-absolute to guest-absolute (bundle = root fs)
     sep = argv.index("--")
     payload_name = _payload().name
@@ -255,52 +329,60 @@ async def test_lifecycle_end_to_end(tmp_path: Path) -> None:
     """A real libkrun microVM: create, exec, pause/resume, DATA checkpoint,
     destroy. Pause is a STOP/BOOT cycle (processes do not survive; workspace
     data does) — the honest semantics the module docstring declares."""
+    spec = _boot_spec(tmp_path, "sbx_lifecycle")
+    if spec is None:
+        pytest.skip("no bootable Linux rootfs: docker daemon or busybox image unavailable")
     driver = _driver(tmp_path)
-    spec = _spec(tmp_path, "sbx_lifecycle")
 
-    instance = await driver.create(spec)
-    assert instance.pid is None  # the VM belongs to msb; no host pid to own
+    created = False
+    try:
+        instance = await driver.create(spec)
+        created = True
+        assert instance.pid is None  # the VM belongs to msb; no host pid to own
 
-    # a real exec inside the microVM
-    result = await driver.exec(
-        spec.sandbox_id,
-        ExecSpec(argv=["/bin/busybox", "echo", "hello-whirlwind"], timeout_s=60.0),
-    )
-    assert result.exit_code == 0
-    assert "hello-whirlwind" in result.stdout
+        # a real exec inside the microVM
+        result = await driver.exec(
+            spec.sandbox_id,
+            ExecSpec(argv=["/bin/busybox", "echo", "hello-whirlwind"], timeout_s=60.0),
+        )
+        assert result.exit_code == 0
+        assert "hello-whirlwind" in result.stdout
 
-    # exec ran with cwd pinned to the virtio-fs workspace mount, and guest
-    # writes are visible on the host (the DATA-checkpoint contract)
-    result = await driver.exec(
-        spec.sandbox_id,
-        ExecSpec(
-            argv=["/bin/busybox", "sh", "-c", "pwd > pwd.txt && echo marker > note.txt"],
-            timeout_s=60.0,
-        ),
-    )
-    assert result.exit_code == 0
-    assert (spec.workspace / "pwd.txt").read_text().strip() == "/workspace"
-    assert (spec.workspace / "note.txt").read_text().strip() == "marker"
+        # exec ran with cwd pinned to the virtio-fs workspace mount, and guest
+        # writes are visible on the host (the DATA-checkpoint contract)
+        result = await driver.exec(
+            spec.sandbox_id,
+            ExecSpec(
+                argv=["/bin/busybox", "sh", "-c", "pwd > pwd.txt && echo marker > note.txt"],
+                timeout_s=60.0,
+            ),
+        )
+        assert result.exit_code == 0
+        assert (spec.workspace / "pwd.txt").read_text().strip() == "/workspace"
+        assert (spec.workspace / "note.txt").read_text().strip() == "marker"
 
-    await driver.pause(spec.sandbox_id)
-    await driver.resume(spec.sandbox_id)
-    # workspace data survives the STOP/BOOT cycle
-    assert (spec.workspace / "note.txt").read_text().strip() == "marker"
+        await driver.pause(spec.sandbox_id)
+        await driver.resume(spec.sandbox_id)
+        # workspace data survives the STOP/BOOT cycle
+        assert (spec.workspace / "note.txt").read_text().strip() == "marker"
 
-    # workspace-layer checkpoint: host-side copy with a merkle root
-    artifact = await driver.checkpoint(spec.sandbox_id, SnapshotKind.DATA)
-    assert artifact.kind == SnapshotKind.DATA
-    assert artifact.path.is_dir()
-    assert (artifact.path / "note.txt").read_text().strip() == "marker"
-    assert artifact.merkle != ""
-    assert artifact.manifest["backend"] == "microsandbox/libkrun"
+        # workspace-layer checkpoint: host-side copy with a merkle root
+        artifact = await driver.checkpoint(spec.sandbox_id, SnapshotKind.DATA)
+        assert artifact.kind == SnapshotKind.DATA
+        assert artifact.path.is_dir()
+        assert (artifact.path / "note.txt").read_text().strip() == "marker"
+        assert artifact.merkle != ""
+        assert artifact.manifest["backend"] == "microsandbox/libkrun"
 
-    # materialize reconstructs the tree (seeding path of ADR-0012 D3)
-    dest = tmp_path / "seeded"
-    await driver.materialize(artifact, dest)
-    assert (dest / "note.txt").read_text().strip() == "marker"
-
-    await driver.destroy(spec.sandbox_id)
+        # materialize reconstructs the tree (seeding path of ADR-0012 D3)
+        dest = tmp_path / "seeded"
+        await driver.materialize(artifact, dest)
+        assert (dest / "note.txt").read_text().strip() == "marker"
+    finally:
+        # remove the VM + its msb record even on mid-test failure, so the next
+        # run of this test does not hit the shared-store name collision.
+        if created:
+            await driver.destroy(spec.sandbox_id)
     with pytest.raises(SandboxNotFound):
         driver.instance(spec.sandbox_id)
 
@@ -310,8 +392,10 @@ async def test_lifecycle_end_to_end(tmp_path: Path) -> None:
 async def test_sandbox_boots_a_dedicated_guest_kernel(tmp_path: Path) -> None:
     """The isolation claim behind Isolation.LIGHT_VM: each sandbox runs its
     own guest kernel (libkrunfw), not the host kernel."""
+    spec = _boot_spec(tmp_path, "sbx_kernel")
+    if spec is None:
+        pytest.skip("no bootable Linux rootfs: docker daemon or busybox image unavailable")
     driver = _driver(tmp_path)
-    spec = _spec(tmp_path, "sbx_kernel")
 
     await driver.create(spec)
     try:
@@ -323,5 +407,42 @@ async def test_sandbox_boots_a_dedicated_guest_kernel(tmp_path: Path) -> None:
         # the guest kernel string is its own — never the host release (the
         # exact libkrunfw version string is not asserted: it tracks msb)
         assert result.stdout.strip() != os.uname().release
+    finally:
+        await driver.destroy(spec.sandbox_id)
+
+
+@MSB_REQUIRED
+@pytest.mark.asyncio
+async def test_create_replaces_stale_record(tmp_path: Path) -> None:
+    """create() must enforce the requested spec even when the msb store
+    already has this name.
+
+    Without `--replace`, `msb run` against an existing name warns and
+    silently REUSES the old VM — creation flags (env, bundle, resources)
+    ignored — which would violate spec-honesty after a crashed prior run.
+    The driver passes `--replace`; this test proves the new env actually
+    takes effect by recreating the same id and reading the guest env."""
+    spec = _boot_spec(tmp_path, "sbx_replace")
+    if spec is None:
+        pytest.skip("no bootable Linux rootfs: docker daemon or busybox image unavailable")
+    driver = _driver(tmp_path)
+
+    spec.env = {"PATH": "/bin:/usr/bin", "MARKER": "first"}
+    try:
+        await driver.create(spec)
+        result = await driver.exec(
+            spec.sandbox_id,
+            ExecSpec(argv=["/bin/busybox", "sh", "-c", "echo $MARKER"], timeout_s=60.0),
+        )
+        assert result.stdout.strip() == "first"
+
+        # recreate the SAME id with a different env: must be replaced, not reused
+        spec.env = {"PATH": "/bin:/usr/bin", "MARKER": "second"}
+        await driver.create(spec)
+        result = await driver.exec(
+            spec.sandbox_id,
+            ExecSpec(argv=["/bin/busybox", "sh", "-c", "echo $MARKER"], timeout_s=60.0),
+        )
+        assert result.stdout.strip() == "second"
     finally:
         await driver.destroy(spec.sandbox_id)
