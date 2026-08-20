@@ -61,9 +61,13 @@ def _msb_probes(monkeypatch: pytest.MonkeyPatch, *, msb: bool, kvm: bool) -> Non
     import shutil as _shutil
 
     real_which = _shutil.which
+    # msb=True must FAKE presence (a dummy path), not fall through to the real
+    # probe: composition-root tests assert the branch logic, independent of
+    # whether the binary happens to be installed on this host. Falling through
+    # made the suite green/un-green depending on the machine.
     monkeypatch.setattr(
         "shutil.which",
-        lambda name: (real_which(name) if (name != "msb" or msb) else None),
+        lambda name: (real_which(name) if name != "msb" else ("/opt/msb/bin/msb" if msb else None)),
     )
     monkeypatch.setattr("whirlwind.drivers.microsandbox.kvm_available", lambda: kvm)
 
