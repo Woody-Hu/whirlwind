@@ -5,9 +5,10 @@
 ## 快照
 
 - 系统形态：harness 无感的沙箱化 agent 运行时；单进程 all-in-one（M1 竖切）→ 多 substrate 演进中。
-- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider）已完成；P1 除 auth 外完成（资源限制、配额、幂等键、k3s）；平台抽象（ADR-0007）与测试运行器（ADR-0008）已落地；顶层文档已拆分为 EN / zh-CN 互链（AGENTS.md §5.5，2026-08-20）。详见 [docs/TODO.md](../TODO.md)。
-- 测试基线（2026-08-20，Linux/x86_64 容器 + 本机 PG/Redis，经 runner）：`not e2e` 全量 **214 passed / 12 skipped**（skip = runsc×4、k8s×4、vsock×1、e2e×3，容器无二进制/设备）。冷启动优化后 p50：无限制 183ms / 含 rlimits 197ms（250ms 线内，详见 session-log 2026-08-20）。macOS 基线（2026-08-19）：202 passed / 24 skipped。
+- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider + 统一配置）已完成；P1 除 auth 外完成（资源限制、配额、幂等键、k3s）；平台抽象（ADR-0007）与测试运行器（ADR-0008）已落地；顶层文档已拆分为 EN / zh-CN 互链（AGENTS.md §5.5，2026-08-20）。详见 [docs/TODO.md](../TODO.md)。
+- 测试基线（2026-08-20，Linux/x86_64 容器 + 本机 PG/Redis，经 runner）：`not e2e` 全量 **248 passed / 12 skipped**（skip = runsc×4、k8s×4、vsock×1、e2e×3，容器无二进制/设备）。冷启动优化后 p50：无限制 183ms / 含 rlimits 197ms（250ms 线内，详见 session-log 2026-08-20）。macOS 基线（2026-08-19）：202 passed / 24 skipped。
 - 懒加载原则（用户约定）：只对「该路径确实不需要」的可选/误伤导入惰性化（如沙箱子进程的 pydantic、echo 的 urllib）；业务必需的加载（agent.server 的 asyncio 等）一律保持急切。
+- 统一配置（ADR-0009，AGENTS.md §3.5）：默认值只在 `config.py` loader 定义一次；优先级 代码默认 < `whirlwind.toml` < `WHIRLWIND_*` env < CLI（None 哨兵）；`whirlwind config show` 自省；密钥值永不进配置文件（只配置 env 变量名）；k3s 经 ConfigMap 挂载 TOML。新增可调值必须登记 loader schema + env 映射。
 
 ## 进行中
 
@@ -45,3 +46,4 @@
 | microsandbox（libkrun/krunkit）第三 VM 底座、mac 本地可测 | 0006 |
 | 平台抽象：PlatformFacts / WHIRLWIND_PLATFORM / @platform_impl 插件 | 0007 |
 | 测试执行日志：runner 落盘 + junit 摘要 + 控制台简要结论 | 0008 |
+| 统一配置：whirlwind.toml 分层注入（file < env < CLI）、schema 强校验、config show | 0009 |

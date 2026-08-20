@@ -23,6 +23,7 @@ Replaces hand-rolled cron/YAML with mature libraries and lands the first real da
 - [x] P0.4 `storage/redis.py`: `RedisKVStore` (Lua CAS) + `RedisLocks` (token-checked release); cross-instance CAS test against real Redis — ADR-0004 D3
 - [x] P0.5 Runtime backend selection: `RuntimeConfig.metadata_backend/kv_backend` + `whirlwind serve` flags; extras `whirlwind[postgres]` / `whirlwind[redis]` — ADR-0004 D4/D5
 - [x] P0.6 Storage benchmarks: memory vs PostgreSQL vs Redis (real services, no fabricated numbers) — ADR-0004 D6 + measured baselines
+- [x] P0.7 Unified configuration: one TOML (`whirlwind.toml`) + layered injection (code defaults < file < `WHIRLWIND_*` env < CLI), schema-validated loader (`config.py`), `whirlwind config show` introspection, k3s manifest switched to ConfigMap-mounted TOML; rule codified as AGENTS.md §3.5 — ADR-0009
 
 ## P1 — Edge hardening / 边缘加固（本轮）
 
@@ -82,3 +83,4 @@ ADR-0002 已预留 provider 位；P0 先落地单节点 PostgreSQL/Redis。多�
 - 2026-08 P1 (auth excluded): sandbox resource limits, live-session quota, idempotency keys, k3s deployment form with measured gate costs (ADR-0005)
 - 2026-08 EngEx: platform abstraction — one `PlatformFacts` object + `@platform_impl` behaviour plugins + `WHIRLWIND_PLATFORM` identity simulation (ADR-0007); test runner with full output to `.test-logs/` and terse console verdict (ADR-0008); AGENTS.md gains §3.3 platform rule and §4.5 test-logging spec
 - 2026-08 Docs: top-level bilingual docs split into separate EN / zh-CN files with language-switch links (README + architecture doc); convention codified as AGENTS.md §5.5 (see session-log 2026-08-20-doc-split.md)
+- 2026-08 P0.7: unified configuration — single `whirlwind.toml` with layered injection (file < env < CLI), schema hard-validation, `config show` introspection; hardcoded operator defaults eliminated; AGENTS.md §3.5 rule (ADR-0009)

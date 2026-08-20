@@ -4,6 +4,12 @@ Pure httpx against a running gateway (`WHIRLWIND_URL`, default
 http://127.0.0.1:8410). `serve` is the only local command — it assembles the
 WhirlwindRuntime in-process and hands its app to uvicorn (the app lifespan runs
 runtime.start/stop).
+
+Configuration (ADR-0009): `serve` resolves its settings through
+`whirlwind.config.load_settings` — code defaults < whirlwind.toml <
+`WHIRLWIND_*` env < explicit CLI flags. The flags below carry `None` sentinels,
+so only explicitly-given flags override; defaults live exactly once in the
+loader. `whirlwind config show` prints the fully resolved configuration.
 """
 
 from __future__ import annotations
@@ -53,28 +59,40 @@ def _check(response: httpx.Response) -> Any:
 def cmd_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
-    from whirlwind.runtime import WhirlwindRuntime, RuntimeConfig
+    from whirlwind.config import ConfigError, load_settings
+    from whirlwind.runtime import WhirlwindRuntime
 
-    runtime = WhirlwindRuntime(
-        RuntimeConfig(
-            data_dir=_path(args.data_dir),
-            repo_root=_path(args.repo_root) if args.repo_root else None,
-            api_key_env=args.api_key_env,
-            llm_upstream=args.llm_upstream,
-            metadata_backend=args.metadata_backend,
-            postgres_dsn=args.postgres_dsn,
-            kv_backend=args.kv_backend,
-            redis_url=args.redis_url,
-            max_live_sessions=args.max_live_sessions,
+    try:
+        settings = load_settings(
+            config_path=args.config,
+            cli={
+                "server.host": args.host,
+                "server.port": args.port,
+                "runtime.data_dir": args.data_dir,
+                "runtime.repo_root": args.repo_root,
+                "runtime.api_key_env": args.api_key_env,
+                "runtime.llm_upstream": args.llm_upstream,
+                "storage.metadata_backend": args.metadata_backend,
+                "storage.postgres_dsn": args.postgres_dsn,
+                "storage.kv_backend": args.kv_backend,
+                "storage.redis_url": args.redis_url,
+                "sandbox.max_live_sessions": args.max_live_sessions,
+            },
         )
-    )
-    uvicorn.run(runtime.app, host=args.host, port=args.port, log_level="info")
+    except ConfigError as exc:
+        _die(str(exc))
+    runtime = WhirlwindRuntime(settings.runtime)
+    uvicorn.run(runtime.app, host=settings.server.host, port=settings.server.port, log_level="info")
 
 
-def _path(value: str) -> "Any":
-    from pathlib import Path
+def cmd_config_show(args: argparse.Namespace) -> None:
+    from whirlwind.config import ConfigError, load_settings, render_toml
 
-    return Path(value).expanduser().resolve()
+    try:
+        settings = load_settings(config_path=args.config)
+    except ConfigError as exc:
+        _die(str(exc))
+    print(render_toml(settings))
 
 
 def cmd_image_build(args: argparse.Namespace) -> None:
@@ -209,21 +227,31 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     serve = sub.add_parser("serve", help="run the all-in-one runtime + gateway")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8410)
-    serve.add_argument("--data-dir", default=".whirlwind")
+    serve.add_argument("--config", default=None,
+                       help="path to whirlwind.toml (default: $WHIRLWIND_CONFIG or ./whirlwind.toml)")
+    serve.add_argument("--host", default=None, help="bind host (default: 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=None, help="bind port (default: 8410)")
+    serve.add_argument("--data-dir", default=None, help="state directory (default: .whirlwind)")
     serve.add_argument("--repo-root", default=None, help="repo image builds install whirlwind from (default: auto)")
-    serve.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
-    serve.add_argument("--llm-upstream", default="https://api.deepseek.com")
-    serve.add_argument("--metadata-backend", default="memory", choices=["memory", "postgres"],
+    serve.add_argument("--api-key-env", default=None,
+                       help="NAME of the env var holding the LLM credential (default: DEEPSEEK_API_KEY)")
+    serve.add_argument("--llm-upstream", default=None, help="LLM egress target (default: https://api.deepseek.com)")
+    serve.add_argument("--metadata-backend", default=None, choices=["memory", "postgres"],
                        help="metadata store backend (default: memory)")
-    serve.add_argument("--postgres-dsn", default=None, help="postgresql://user:pass@host:port/db (with --metadata-backend postgres)")
-    serve.add_argument("--kv-backend", default="memory", choices=["memory", "redis"],
+    serve.add_argument("--postgres-dsn", default=None, help="postgresql://user:pass@host:port/db (with metadata_backend=postgres)")
+    serve.add_argument("--kv-backend", default=None, choices=["memory", "redis"],
                        help="hot-state KV backend (default: memory)")
-    serve.add_argument("--redis-url", default=None, help="redis://[:pass@]host:port/db (with --kv-backend redis)")
+    serve.add_argument("--redis-url", default=None, help="redis://[:pass@]host:port/db (with kv_backend=redis)")
     serve.add_argument("--max-live-sessions", type=int, default=None,
                        help="cap on concurrent live sessions (default: uncapped)")
     serve.set_defaults(func=cmd_serve)
+
+    config = sub.add_parser("config", help="configuration introspection (ADR-0009)")
+    config_sub = config.add_subparsers(dest="config_command", required=True)
+    show = config_sub.add_parser("show", help="print the effective configuration as TOML")
+    show.add_argument("--config", default=None,
+                      help="path to whirlwind.toml (default: $WHIRLWIND_CONFIG or ./whirlwind.toml)")
+    show.set_defaults(func=cmd_config_show)
 
     image = sub.add_parser("image")
     image_sub = image.add_subparsers(dest="image_command", required=True)

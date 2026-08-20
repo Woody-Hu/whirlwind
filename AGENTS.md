@@ -59,7 +59,8 @@ whirlwind/
 │   │   ├── 0005-edge-hardening.md       # 沙箱资源限制、会话配额、幂等键、k3s 部署
 │   │   ├── 0006-microsandbox-driver.md  # libkrun/krunkit 第三 VM 底座（定稿待实施）
 │   │   ├── 0007-platform-abstraction.md # 平台抽象：PlatformFacts + WHIRLWIND_PLATFORM + 行为插件
-│   │   └── 0008-test-logging.md         # 测试执行日志：runner 落盘 + junit 摘要 + 简要结论
+│   │   ├── 0008-test-logging.md         # 测试执行日志：runner 落盘 + junit 摘要 + 简要结论
+│   │   └── 0009-unified-config.md       # 统一配置：单一 TOML + 分层注入（file < env < CLI）
 │   ├── TODO.md                      # 演进路线活文档（P0~P4 优先级分层）
 │   ├── session-logs/                # 开发 session 记录（见 §5.3，按日期归档）
 │   └── memory/                      # 项目记忆（见 §6，长上下文 handoff 载体）
@@ -92,7 +93,8 @@ whirlwind/
 │   ├── timer/                       # Kafka 式层次时间轮 wheel.py + cron.py（croniter 委托）
 │   ├── bus/                         # 进程内事件总线（主题扇出、seq 游标）
 │   ├── runtime.py                   # WhirlwindRuntime：自底向上装配 storage→hostlet→control→gateway，后端选择（metadata_backend/kv_backend）
-│   └── cli.py                       # CLI 入口（whirlwind 命令）
+│   ├── config.py                    # 统一配置加载：TOML + env + CLI 分层注入，schema 强校验（ADR-0009，§3.5）
+│   └── cli.py                       # CLI 入口（whirlwind 命令；serve 经 load_settings 装配，config show 自省）
 ├── scripts/
 │   └── run_tests.py                     # 测试运行器：完整输出落 .test-logs/，控制台仅简要结论（ADR-0008，§4.5）
 ├── tests/
@@ -170,6 +172,16 @@ whirlwind/
 - `drivers.process.rlimits`：`"*"` = POSIX 全量（RLIMIT_AS / RLIMIT_CPU / RLIMIT_NPROC）；`"macos"` = 诚实剔除 `RLIMIT_AS`（macOS 内核拒绝 soft=hard，ADR-0005 D1 的透明化）。策略在父进程 (`create`) 解析、`preexec_fn` 只应用预计算计划（fork/exec 间不做探测，异步信号安全）。
 
 平台差异化设计约束见 [ADR-0001](docs/adr/0001-agent-runtime-m1.md)（driver 接缝/能力位如实上报）与 [ADR-0005](docs/adr/0005-edge-hardening.md)（资源上限诚实注记）；VM 级底座 [microsandbox](docs/adr/0006-microsandbox-driver.md)（ADR-0006，`Isolation.LIGHT_VM`，libkrun/krunkit）同样走 `SandboxDriver` 接口而与平台层解耦。
+
+### 3.5 统一配置（Unified configuration）
+
+**禁止写死运维配置**：所有运维可调值（bind 地址、数据目录、后端选择、资源上限、会话配额……）统一经 [config.py](src/whirlwind/config.py) 的单一加载机制注入，**详细决策见 [ADR-0009](docs/adr/0009-unified-config.md)**。要点：
+
+- **优先级阶梯**：代码默认值 < `whirlwind.toml` < `WHIRLWIND_*` 环境变量 < 显式 CLI 参数。默认值只在 loader 定义**一次**；CLI 参数是纯覆盖（argparse 默认值为 `None` 哨兵，显式给出才生效），不得在 argparse / dataclass 里重复写死默认值。
+- **文件发现**：`--config PATH` > `$WHIRLWIND_CONFIG` > `./whirlwind.toml`（存在时）> 纯默认值（零配置可启动）。
+- **schema 强校验**：未知分区/键是硬错误（`whirlwind/config`）；新增可调值必须同时登记 loader schema、env 映射与（视情况）CLI 参数，并在 ADR-0009 的 schema 块中文档化。
+- **不进配置文件**（ADR-0009 D8）：密钥**值**（只配置环境变量名 `api_key_env`，值保持真实环境变量由 Hostlet 读取）、沙箱内部注入变量（`WHIRLWIND_SANDBOX_ID` 等，运行时注入）、`WHIRLWIND_PLATFORM`（ADR-0007，env-only）、`WHIRLWIND_URL`（客户端关注点）。
+- 自省：`whirlwind config show` 打印生效配置（来源 + 生效 TOML）。
 
 ---
 
@@ -336,8 +348,8 @@ ADR 需覆盖的设计维度（按需取舍，至少明确其一）：
 
 > **环境先检测，不预设平台。** 开发/执行环境不一定是 macOS（可能是 Linux、受限容器、无头 CI）。凡是 VM 级或容器级工作流（microsandbox/krun/krunkit、Docker、k3s 集群、runsc），**执行前先检测所在环境**——平台、可用二进制（`shutil.which`）、虚拟化支持（`/dev/vsock`、`CAP_SYS_ADMIN`）——再决定路径或如实降级/skip。集成测试已按此约定经 `conftest.py` 探测，后端不可达即 skip（禁 mock 铁律 §4.2）。不要把"当前沙箱可不可用"误当成"平台不支持"（参考 k3s 曾经的假性失败）。
 
-- **启动**：`uv sync` → `whirlwind image build echo` → `whirlwind serve --port 8410 --data-dir .whirlwind`
-- **后端切换**：`whirlwind serve --metadata-backend postgres --kv-backend redis`（需 `whirlwind[postgres]` / `whirlwind[redis]` extras）
+- **启动**：`uv sync` → `whirlwind image build echo` → `whirlwind serve`（配置经 `whirlwind.toml` / `WHIRLWIND_*` env / CLI 分层注入，§3.5；`whirlwind config show` 自省生效配置；示例见 `deploy/whirlwind.example.toml`）
+- **后端切换**：`whirlwind serve --metadata-backend postgres --kv-backend redis` 或经 `[storage]` 配置分区（需 `whirlwind[postgres]` / `whirlwind[redis]` extras）
 - **生产后端依赖**：PostgreSQL / Redis 需本地可达；`tests/integration/conftest.py` 探测，不可达即 skip
 - **gVisor**：`runsc` 仅 Linux；无二进制或受限容器（无 `CAP_SYS_ADMIN`）自动降级 rootless + `--network=none`（rootless 不支持 restore，上游限制）；也验证过可装在 colima 的 Linux Docker VM 内作为 Docker runtime
 - **microsandbox**：libkrun/krunkit（`Isolation.LIGHT_VM`），需 `Virtualization.framework`/真机；colima `--vm-type krunkit` 是其一等后端（ADR-0006）

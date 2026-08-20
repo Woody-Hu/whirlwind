@@ -1,0 +1,37 @@
+# whirlwind.toml — example configuration (ADR-0009).
+#
+# Every key is optional; shown with effective defaults. Copy to ./whirlwind.toml
+# (auto-discovered), point WHIRLWIND_CONFIG at it, or pass `serve --config PATH`.
+# Precedence: code defaults < this file < WHIRLWIND_* env vars < explicit CLI flags.
+# Verify what actually runs with: whirlwind config show
+#
+# Secrets never live here — only the NAME of the env var holding them
+# (runtime.api_key_env); the Hostlet reads the real value from the environment.
+
+[server]
+host = "127.0.0.1"            # uvicorn bind; "0.0.0.0" when behind a service mesh
+port = 8410
+
+[runtime]
+data_dir = ".whirlwind"       # resolved against cwd at load time
+# repo_root = null            # where image builds install whirlwind from; default: auto-detect
+api_key_env = "DEEPSEEK_API_KEY"   # env var NAME holding the LLM credential
+llm_upstream = "https://api.deepseek.com"
+wheel_tick_ms = 20
+
+[runtime.warm_pool]           # agent_version_id -> min_warm (prewarming; off when empty)
+# "ver_xxx" = 2
+
+[storage]
+metadata_backend = "memory"   # "memory" | "postgres"
+# postgres_dsn = "postgresql://user:pass@host:5432/whirlwind"   # required with postgres
+kv_backend = "memory"         # "memory" | "redis"
+# redis_url = "redis://localhost:6379/0"                        # required with redis
+
+[sandbox]
+# max_live_sessions = 64      # admission cap (ADR-0005 D2); null = uncapped
+
+[sandbox.resources]           # per-sandbox ceilings (ADR-0005 D1); null = none
+# mem_limit_mb = 512
+# cpu_seconds = 3600
+# pids_max = 256
