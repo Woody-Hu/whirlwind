@@ -15,6 +15,7 @@ from .base import (
     SnapshotArtifact,
     UnsupportedCapability,
 )
+from .microsandbox import MicrosandboxDriver
 from .process import ProcessDriver
 from .runsc import RunscDriver
 
@@ -22,4 +23,5 @@ __all__ = [
     "Caps", "Density", "DriverError", "ExecResult", "ExecSpec", "Instance",
     "Isolation", "Resources", "SandboxDriver", "SandboxNotFound", "SandboxSpec",
     "SnapshotArtifact", "UnsupportedCapability", "ProcessDriver", "RunscDriver",
+    "MicrosandboxDriver",
 ]
