@@ -2,13 +2,13 @@
 
 # ADR-0006：Microsandbox driver——`SandboxDriver` 接口上一个可本地测试的 VM 底座
 
-- Status: Accepted (design locked; implementation deferred to a real-host session)
-- Date: 2026-08-19
-- Related: [ADR-0001](0001-agent-runtime-m1.md) (driver seam D2), [ADR-0002](0002-m3-substrates.md) (runsc/gVisor), [ADR-0005](0005-edge-hardening.md) (resource ceilings), [TODO](../TODO.md) P3.4/P3.5
+- Status: Implemented — M1 driver / M2 wiring / M3 gated tests landed 2026-08-20; real-VM lifecycle verification still pending a KVM/HVF-capable host (see Implementation record below)
+- Date: 2026-08-19 (design) / 2026-08-20 (implementation)
+- Related: [ADR-0001](0001-agent-runtime-m1.md) (driver seam D2), [ADR-0002](0002-m3-substrates.md) (runsc/gVisor), [ADR-0005](0005-edge-hardening.md) (resource ceilings), [ADR-0007](0007-platform-abstraction.md) (platform facts), [TODO](../TODO.md) P3.4/P3.5
 
-- 状态：已接受（设计已定稿；实施推迟到有真机的 session）
-- 日期：2026-08-19
-- 关联：[ADR-0001](0001-agent-runtime-m1.md)（driver 接缝 D2）、[ADR-0002](0002-m3-substrates.md)（runsc/gVisor）、[ADR-0005](0005-edge-hardening.md)（资源上限）、[TODO](../TODO.md) P3.4/P3.5
+- 状态：已实施——M1 驱动 / M2 装配 / M3 门控测试于 2026-08-20 落地；真实 VM 生命周期验证仍待有 KVM/HVF 的宿主（见下方实施记录）
+- 日期：2026-08-19（设计）/ 2026-08-20（实施）
+- 关联：[ADR-0001](0001-agent-runtime-m1.md)（driver 接缝 D2）、[ADR-0002](0002-m3-substrates.md)（runsc/gVisor）、[ADR-0005](0005-edge-hardening.md)（资源上限）、[ADR-0007](0007-platform-abstraction.md)（平台事实）、[TODO](../TODO.md) P3.4/P3.5
 
 ---
 
@@ -166,3 +166,97 @@ microsandbox` option) the same way P0 already swaps storage backends.
 运行时宿主——平台、`shutil.which("krun")`/krunkit、虚拟化支持——再决定执行或如实 skip。
 没有 `Virtualization.framework`/真机时，驱动存在但生命周期测试 skip，绝不出 mock 或假声明。
 - 更新 [AGENTS.md](../AGENTS.md)（目录索引 + §1.3 + §7 环境检测）、[MEMORY.md](../memory/MEMORY.md) 与 [TODO.md](../TODO.md) P3.5，作为本 ADR 的实施锚点。
+
+---
+
+## Implementation record (2026-08-)
+
+## 实施记录（2026-08）
+
+**What landed / 已落地**（session-log `2026-08-20-microsandbox-driver.md`）：
+
+- **Deviation from the D1 backend wording — the driver wraps the `msb` CLI, not raw
+  krun/krunkit.** The open point above ("spike resolves the exact invocation") resolved
+  this way: raw libkrun is a C library with no sandbox lifecycle surface, and krunkit is
+  a containerd-oriented daemon (the colima VM backend). The microsandbox CLI (`msb`,
+  libkrun-based, same upstream) exposes exactly the surface this driver needs —
+  `run/exec/stop/start/remove`, `--mount-dir`, `-m`, `--rlimit`, `-e`, `-w`, `--detach` —
+  so `MicrosandboxDriver` orchestrates `msb` the same way `RunscDriver` orchestrates
+  `runsc` (architecture 8.2 integration level). This changes the wrapped binary, not the
+  design: still one `SandboxDriver` implementation, still `Isolation.LIGHT_VM`, still
+  zero `control`/`hostlet` changes.
+- `scripts/setup/install-microsandbox.sh`: OS-annotated installer (Linux x86_64/aarch64,
+  macOS arm64) with SHA256 verification, segmented parallel download, correct versioned
+  `libkrunfw.so.<abi>` layout; documents the un-installable runtime prerequisites
+  (loaded host kvm module / device passthrough on Linux; no TCG fallback in libkrun).
+- `drivers/microsandbox.py` (M1): CLI rendering (`_render_run_argv` / `_render_exec_argv`
+  / `_guest_path`), lifecycle over `msb` subprocesses, DATA snapshots as host-side
+  workspace copies with merkle roots (the workspace is a host-mounted virtio-fs
+  directory by construction — no VM interaction needed, same contract as the process
+  driver's seeding path in ADR-0012 D3).
+- Wiring (M2): `sandbox.driver=microsandbox` in the config enum + `whirlwind serve
+  --driver microsandbox` + `build_driver` composition-root validation — binary probe via
+  `shutil.which("msb")` and, on Linux, `kvm_available()` (a real open(2) on `/dev/kvm`);
+  named-but-unavailable fails boot loudly, no silent fallback (ADR-0012 D5 rule).
+- Tests (M3): `tests/integration/test_microsandbox_driver.py` — rendering/caps/refusal
+  logic runs unconditionally (13 tests); real-microVM lifecycle tests gate on
+  `which("msb")` + backend and **skip honestly** where `/dev/kvm` does not open.
+  `tests/unit/test_runtime_config.py` gains the composition-root branch tests (probes
+  stubbed there are branch logic only; the real verdict comes from the gated suite).
+
+**Capability honesty, as probed against the real `msb` 0.6.12 (2026-08-20):**
+
+- `snapshot_full=False`: `msb snapshot create --resumable` — the only memory-state
+  surface — returns an explicit unsupported-feature error in v0.6.x ("reserved by the
+  public contract"). Flipping this bit requires a passing restore test on a real backend.
+- `pause` is honestly a STOP/BOOT cycle, not a memory freeze: processes do not survive,
+  workspace data does. The memory-freeze class of behavior is what `snapshot_full=False`
+  already declares absent.
+- `net_policy=False`: msb ships programmable networking; this driver wires none of it.
+- `density=MEDIUM`: one microVM (own kernel + memory) per sandbox.
+
+**What is still pending / 仍待完成：** the two gated lifecycle tests have not executed on
+a real backend — the dev container's `/dev/kvm` node exists but open(2) fails ENODEV
+(host kvm module not loaded; `msb doctor` agrees: "KVM access unavailable"). They are
+written and waiting for a KVM-capable Linux host or an Apple-Silicon mac (HVF). Per the
+honesty rule above, `snapshot_full` stays `False` until a real restore passes there.
+
+- **与 D1 措辞的偏差——驱动封装的是 `msb` CLI，而非裸 krun/krunkit。** 上方开放点
+  （"spike 敲定确切调用方式"）的裁决是：裸 libkrun 是 C 库、没有沙箱生命周期面；
+  krunkit 是面向 containerd 的守护进程（colima 的 VM 后端）。microsandbox CLI
+  （`msb`，同样基于 libkrun）恰好暴露本驱动需要的全部表面——`run/exec/stop/start/remove`、
+  `--mount-dir`、`-m`、`--rlimit`、`-e`、`-w`、`--detach`——因此 `MicrosandboxDriver`
+  编排 `msb` 的方式与 `RunscDriver` 编排 `runsc` 相同（架构 8.2 的集成层级）。变化的
+  只是被封装的二进制，不是设计：仍是唯一的 `SandboxDriver` 实现、仍是
+  `Isolation.LIGHT_VM`、`control`/`hostlet` 仍零改动。
+- `scripts/setup/install-microsandbox.sh`：带 OS 标注的安装器（Linux x86_64/aarch64、
+  macOS arm64），SHA256 校验 + 分段并行下载 + 正确的 `libkrunfw.so.<abi>` 版本化布局；
+  并如实文档化安装器装不了的运行时前提（Linux 需宿主 kvm 模块已加载 + 设备透传；
+  libkrun 无 TCG 回退）。
+- `drivers/microsandbox.py`（M1）：CLI 渲染（`_render_run_argv` / `_render_exec_argv` /
+  `_guest_path`）、经 `msb` 子进程的生命周期、DATA 快照为宿主侧 workspace 拷贝 +
+  merkle 根（workspace 按构造就是宿主挂载的 virtio-fs 目录——无需与 VM 交互，与
+  process driver 的播种路径同一契约，ADR-0012 D3）。
+- 装配（M2）：config enum `sandbox.driver=microsandbox` + `whirlwind serve --driver
+  microsandbox` + `build_driver` 组合根校验——`shutil.which("msb")` 二进制探测，Linux
+  上另加 `kvm_available()`（对 `/dev/kvm` 的真实 open(2)）；指名不可用即启动失败、
+  绝不静默回退（ADR-0012 D5 规则）。
+- 测试（M3）：`tests/integration/test_microsandbox_driver.py`——渲染/能力/拒绝逻辑
+  无条件运行（13 项）；真实 microVM 生命周期测试按 `which("msb")` + 后端门控，
+  `/dev/kvm` 打不开处**诚实 skip**。`tests/unit/test_runtime_config.py` 增加组合根
+  分支测试（那里的探测 stub 只测分支逻辑；真实裁决来自门控套件）。
+
+**能力诚实性（对真实 `msb` 0.6.12 探测，2026-08-20）：**
+
+- `snapshot_full=False`：`msb snapshot create --resumable`——唯一的内存态表面——在
+  v0.6.x 返回明确的不支持特性错误（"reserved by the public contract"）。翻转此位
+  需要在真实后端上通过 restore 测试。
+- `pause` 诚实地是 STOP/BOOT 循环而非内存冻结：进程不存活、workspace 数据存活。
+  内存冻结这一类行为已由 `snapshot_full=False` 声明不存在。
+- `net_policy=False`：msb 有可编程网络；本驱动未接线任何网络策略。
+- `density=MEDIUM`：每沙箱一个 microVM（独立内核 + 内存）。
+
+**仍待完成：** 两个门控生命周期测试尚未在真实后端上执行——开发容器的 `/dev/kvm`
+节点存在但 open(2) 返回 ENODEV（宿主 kvm 模块未加载；`msb doctor` 同样报告
+"KVM access unavailable"）。它们已写好，等待有 KVM 的 Linux 宿主或 Apple Silicon mac
+（HVF）。按上述诚实规则，`snapshot_full` 在真实 restore 通过前保持 `False`。

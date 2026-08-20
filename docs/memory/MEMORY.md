@@ -5,8 +5,8 @@
 ## 快照
 
 - 系统形态：harness 无感的沙箱化 agent 运行时；单进程 all-in-one（M1 竖切）→ 多 substrate 演进中。
-- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider + 统一配置）已完成；P1 除 auth/tenancy 外完成（资源限制、配额、幂等键、k3s、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011、delta 快照 + 底座钉选 ADR-0012）；平台抽象（ADR-0007）与测试运行器（ADR-0008）已落地；顶层文档已拆分为 EN / zh-CN 互链（AGENTS.md §5.5，2026-08-20）。详见 [docs/TODO.md](../TODO.md)。
-- 测试基线（2026-08-20，Linux/x86_64 容器 + 本机 PG/Redis，经 runner）：`not e2e` 全量 **330 passed / 9 skipped**（runsc 已实装真跑 ×8；剩余 skip = k8s×4、vsock×1、rootless restore×1、e2e×3，均为环境事实）。冷启动优化后 p50：无限制 183ms / 含 rlimits 197ms（250ms 线内，详见 session-log 2026-08-20）。macOS 基线（2026-08-19）：202 passed / 24 skipped。
+- 里程碑：M1（单进程竖切）、M2（全生命周期）已完成；M3 部分（runsc / 传输 / WAL EventLog）；P0（成熟库 + PG/Redis provider + 统一配置）已完成；P1 除 auth/tenancy 外完成（资源限制、配额、幂等键、k3s、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011、delta 快照 + 底座钉选 ADR-0012）；平台抽象（ADR-0007）与测试运行器（ADR-0008）已落地；**microsandbox 第三底座已落地（ADR-0006 Implemented，2026-08-20：msb CLI 封装 + 装配 + 门控测试；真实 VM 生命周期验证待 KVM/HVF 宿主）**；顶层文档已拆分为 EN / zh-CN 互链（AGENTS.md §5.5，2026-08-20）。详见 [docs/TODO.md](../TODO.md)。
+- 测试基线（2026-08-20，Linux/x86_64 容器 + 本机 PG/Redis + runsc/msb 实装，经 runner）：`not e2e` 全量 **347 passed / 11 skipped**（runsc 真跑 ×8；microsandbox 渲染/装配 ×17 真跑；剩余 skip = k8s×4、vsock×1、rootless restore×1、e2e×3、msb VM×2（KVM ENODEV），均为环境事实）。冷启动优化后 p50：无限制 183ms / 含 rlimits 197ms（250ms 线内，详见 session-log 2026-08-20）。macOS 基线（2026-08-19）：202 passed / 24 skipped。
 - 懒加载原则（用户约定）：只对「该路径确实不需要」的可选/误伤导入惰性化（如沙箱子进程的 pydantic、echo 的 urllib）；业务必需的加载（agent.server 的 asyncio 等）一律保持急切。
 - 统一配置（ADR-0009，AGENTS.md §3.5）：默认值只在 `config.py` loader 定义一次；优先级 代码默认 < `whirlwind.toml` < `WHIRLWIND_*` env < CLI（None 哨兵）；`whirlwind config show` 自省；密钥值永不进配置文件（只配置 env 变量名）；k3s 经 ConfigMap 挂载 TOML。新增可调值必须登记 loader schema + env 映射。
 - Agent env 密钥（ADR-0010）：名字进 `AgentVersion.env_secrets`、值以 pynacl 信封（`v1:<key_id>:<b64>`）进 `SecretStore`（本地默认后端 0600 JSON）；API 对值只写；供给期 fail-closed 解密注入（优先级 bundle < secrets < prepared）；保留名（`WHIRLWIND_*`、`DEEPSEEK_API_KEY`）拒收。主密钥 `WHIRLWIND_SECRET_KEY` env（开发兜底 `data_dir/secret.key`）；密钥轮转未实现（信封 `v1` 前缀即接缝）。
@@ -17,13 +17,13 @@
 
 - P1.1 Gateway API-key 认证（待租户维度）与 P1.6（per-tenant 限流/配额）未启动。
 - P2 可观测性（/metrics、结构化日志、OTLP tracing）未启动。
-- Microsandbox（ADR-0006，`Isolation.LIGHT_VM`，libkrun/krunkit）：**设计已定稿 @ Accepted，文档已落盘；代码实施推迟到有真机的 session**（TODO P3.5，M0 spike 需真机探测 krunkit CLI）。
+- P3.5 microsandbox：驱动/装配/门控测试已落地（2026-08-20）；**遗留 M4——真实 VM 生命周期套件待有 KVM 的 Linux 宿主或 Apple Silicon mac（HVF）执行**；`snapshot_full` 在真实 restore 通过前保持 False。
 - 2026-08-19：生成 AGENTS.md，建立 ADR 先行 / session-log / 项目记忆规范（本文件即首批载体）。
 
 ## 环境事实
 
 - 双平台：macOS（M 系列）+ Linux；Linux 容器（Ubuntu 24.04，无 CAP_SYS_ADMIN）已实装 runsc `release-20260817.0` + 静态 busybox 1.35.0（`scripts/setup/install-runsc.sh`，分段并行下载 + sha512 校验）→ rootless + `--network=none` 模式，restore 用例按上游限制 skip。
-- microsandbox（libkrun）在无 `/dev/kvm` 的容器不可行（宿主 CPU 有 vmx/svm 但未透传）——与 ADR-0006「真机 session 实施」定位一致；本容器亦无 `/dev/vsock`。
+- microsandbox：msb 0.6.12 已装进本容器（`scripts/setup/install-microsandbox.sh`：SHA256 校验 + 分段下载 + libkrunfw 版本化布局；Linux 需 glibc ≥ 2.28）。**但 `/dev/kvm` 节点存在而 open(2) 返回 ENODEV（宿主 kvm 模块未加载，mknod 无解；`msb doctor` 诚实报告 "KVM access unavailable"；libkrun 无 TCG 回退）**——VM 生命周期测试在本容器诚实 skip，需真机/有 KVM 宿主验证。本容器亦无 `/dev/vsock`。
 - 平台判断统一走 `core/platform`（ADR-0007）：`current_facts()` 取事实，`@platform_impl`/`resolve_impl` 分发行为插件；`WHIRLWIND_PLATFORM` 仅模拟身份（探测类事实永不被覆盖），生产不设置。
 - 测试一律经 `uv run python scripts/run_tests.py ...`（ADR-0008）：完整输出在 `.test-logs/`（gitignore），控制台仅 verdict + 失败摘要，退出码透传 pytest。
 - PostgreSQL / Redis 为 extras（`whirlwind[postgres]` / `whirlwind[redis]`）；集成测试经 conftest 探测，不可达即 skip。
@@ -37,6 +37,7 @@
 - **busybox applet 陷阱**：bundle rootfs 只有 busybox 多调用二进制、无 applet 符号链接——`busybox sh -c "sleep 300"` 会因找不到独立 `sleep` 而 exit 127、容器 stopped；OCI init 必须用直接 applet 调用（`busybox sleep 300`）。长期 skip 的测试在装上真二进制后会暴露这类假设（2026-08-20 实录）。
 - 沙箱内 `DEEPSEEK_API_KEY` 只是占位符 `whirlwind-relay`；真实凭证仅在 Hostlet SecretRelay，出网时替换 Authorization 头。
 - README / 架构文档已拆分 EN 与 zh-CN 两份（互链切换）；更新内容必须同步两份（AGENTS.md §5.5）。引用性能数字必须注明来源（ADR / 实测）。
+- **环境重置坑（2026-08-20 实录）**：容器重建后 runsc/busybox/PG 角色全丢；PG 的 `whirlwind_test` 库为镜像预置（owner=postgres），存在性检查会跳过 `createdb -O` → PG15+ public schema 权限拒绝（恢复命令：`ALTER DATABASE whirlwind_test OWNER TO whirlwind` + `GRANT ALL ON SCHEMA public TO whirlwind`）。zsh 无 `/dev/tcp` 重定向——TCP 探测用 `pg_isready`/`redis-cli ping`。
 - driver 的 Caps/Resources 必须如实上报（声明即执行）；已知无法诚实保证的维度不声明或在 docstring 写明 caveat。
 
 ## 决策索引
