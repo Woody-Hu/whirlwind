@@ -47,9 +47,9 @@ Today: plain text logs only. No metrics, no tracing, no structured logging.
 
 现状：纯文本日志；无 metrics、无 tracing、无结构化日志。
 
-- [ ] P2.1 `/metrics` endpoint (prometheus text format, stdlib-only renderer) with first-class counters: sessions by status, turn latency, WAL append rate, sandbox population
-- [ ] P2.2 Structured (JSON) logging with request/session correlation ids
-- [ ] P2.3 OTLP tracing (Architecture 6.1 M3 deliverable; deferred until a collector exists in the target env)
+- [x] P2.1 `/metrics` endpoint (prometheus text format, stdlib-only renderer) with first-class counters: sessions by status, turn latency, WAL append rate, sandbox population — ADR-0013 D1/D3
+- [x] P2.2 Structured (JSON) logging with request/session correlation ids — ADR-0013 D2
+- [~] P2.3 Tracing: W3C Trace Context (traceparent/traceresponse, always-on, gateway + outbound propagation, log correlation) landed — ADR-0013 D4. OTLP export (Architecture 6.1 M3 deliverable) still deferred until a collector exists in the target env; sampling policy is a config knob, not a protocol change.
 
 ## P3 — Cluster form / 集群形态（M3 余量）
 
@@ -92,3 +92,4 @@ ADR-0002 已预留 provider 位；P0 先落地单节点 PostgreSQL/Redis。多�
 - 2026-08 P1.9: delta snapshots + single-substrate pinning — capability-gated overlay checkpoints chained per session lineage with compaction, driver selection by config with honest boot failure; sparse-bench payload win ~50x (ADR-0012; see session-log 2026-08-20-delta-snapshots.md)
 - 2026-08 EngEx: dependency setup scripts with OS annotations (`scripts/setup/` — runsc with segmented parallel download + sha512, PostgreSQL, Redis; see session-log 2026-08-20-dependency-scripts-runsc.md); runsc installed for real in the Linux container → gVisor suite ×8 un-skipped, full baseline 330 passed / 9 skipped
 - 2026-08 P3.5: microsandbox driver landed + real-VM verification — `msb` CLI orchestration (msb 0.6.12 Linux / 0.6.8 macOS, installer with SHA256 + segmented download), honest caps (snapshot_full/net_policy/delta all False, density=MEDIUM, pause=STOP-BOOT), config/CLI/runtime wiring with boot-time KVM probe, 13 unconditional + 3 backend-gated tests (incl. `test_create_replaces_stale_record`), benchmarks (cold start p50=116ms, exec p50=11ms, checkpoint p50=1ms on Apple Silicon HVF), full suite 336 passed/26 skipped on macOS (ADR-0006 Implemented + M4 verified; see session-log 2026-08-20-microsandbox-mac-verification.md)
+- 2026-08 P2: observability closure — dependency-free Prometheus-text `/metrics` (stdlib-only Counter/Gauge/Histogram registry, sampled source-of-truth gauges for sessions/sandboxes, event counts for turns/WAL/HTTP, ASGI timing middleware with bounded route labels), single-line structured JSON logging keyed by a correlation scope (request_id/trace_id/span_id), W3C Trace Context for traceparent/traceresponse + outbound propagation, wired at one composition root; `/metrics` render 2,870 renders/s (async sampler 2,839) measured, HTTP gateway tests green. Redis/PostgreSQL installed for real → storage contract suite 33 passed across memory+postgres, storage benchmarks measured per backend (memory ~113k ops/s, Redis CAS ~9.3k, PG session-update ~1.8k) (ADR-0013; provision-test-db.sh fills the default-DSN gap; see session-log 2026-08-20-observability.md)

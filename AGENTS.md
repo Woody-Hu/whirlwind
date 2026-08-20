@@ -34,7 +34,7 @@ Gateway (REST + SSE + MCP)          接入层：会话 / 事件流 / cron / 镜�
 
 ### 1.3 演进状态
 
-- **已落地**：M1 单进程竖切（process driver、echo/dsh adapter、Seam renderer、REST+SSE+MCP、CLI）；M2 全生命周期（suspend/resume、warm 池 CAS、时间轮 cron）；M3 部分（runsc driver 真实 gVisor 全生命周期验证、TCP/UDS/vsock 传输、durable WAL EventLog）；P0（croniter/PyYAML 成熟库、PostgreSQL/Redis provider）；P1 除 auth 外（资源限制、会话配额、幂等键、k3s 部署、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011、delta 快照 + 底座钉选 ADR-0012）；平台抽象（ADR-0007：PlatformFacts + platform_impl 行为插件）与测试运行器（ADR-0008：日志落盘 + 控制台简要结论）；microsandbox 第三 VM 底座（[ADR-0006](docs/adr/0006-microsandbox-driver.md) Implemented + M4 verified：msb CLI 封装 + 装配 + 门控测试 + benchmark；2026-08-20 已在 Apple Silicon mac 上真实跑通 HVF 生命周期）。
+- **已落地**：M1 单进程竖切（process driver、echo/dsh adapter、Seam renderer、REST+SSE+MCP、CLI）；M2 全生命周期（suspend/resume、warm 池 CAS、时间轮 cron）；M3 部分（runsc driver 真实 gVisor 全生命周期验证、TCP/UDS/vsock 传输、durable WAL EventLog）；P0（croniter/PyYAML 成熟库、PostgreSQL/Redis provider）；P1 除 auth 外（资源限制、会话配额、幂等键、k3s 部署、agent env 密钥 ADR-0010、seam 模板/实例 + harness 组合 ADR-0011、delta 快照 + 底座钉选 ADR-0012）；P2 可观测性闭环（[ADR-0013](docs/adr/0013-observability.md)：零依赖 prometheus-text `/metrics` + 结构化 JSON 日志 + W3C Trace Context）；平台抽象（ADR-0007：PlatformFacts + platform_impl 行为插件）与测试运行器（ADR-0008：日志落盘 + 控制台简要结论）；microsandbox 第三 VM 底座（[ADR-0006](docs/adr/0006-microsandbox-driver.md) Implemented + M4 verified：msb CLI 封装 + 装配 + 门控测试 + benchmark；2026-08-20 已在 Apple Silicon mac 上真实跑通 HVF 生命周期）。
 - **已定稿待实施**：无（microsandbox 已于 2026-08-20 落地，真实后端验证亦已完成——见 [docs/TODO.md](docs/TODO.md) P3.5 与 ADR-0006 验证记录）。
 - **进行中/待办**：见 [docs/TODO.md](docs/TODO.md)（活文档，随每个自闭环变更增量维护）。
 
@@ -98,9 +98,11 @@ whirlwind/
 │   ├── secrets.py                   # Agent env 密钥：SecretBox 封存/解密 + 名字校验（ADR-0010，仅宿主侧导入，沙箱冷路径永不加载）
 │   ├── runtime.py                   # WhirlwindRuntime：自底向上装配 storage→hostlet→control→gateway，后端选择（metadata_backend/kv_backend）
 │   ├── config.py                    # 统一配置加载：TOML + env + CLI 分层注入，schema 强校验（ADR-0009，§3.5）
+│   ├── observability/               # 可观测性（ADR-0013）：metrics.py（零依赖 prometheus-text 注册表）+ collector.py（采样型 gauge/事件型 counter）+ logconfig.py（JSON 日志 + 关联作用域）+ trace.py（W3C traceparent）+ middleware.py（HTTP 计时 + Trace）
 │   └── cli.py                       # CLI 入口（whirlwind 命令；serve 经 load_settings 装配，config show 自省）
 ├── scripts/
-│   └── run_tests.py                     # 测试运行器：完整输出落 .test-logs/，控制台仅简要结论（ADR-0008，§4.5）
+│   ├── run_tests.py                     # 测试运行器：完整输出落 .test-logs/，控制台仅简要结论（ADR-0008，§4.5）
+│   └── setup/                           # 依赖安装/装配脚本（OS 标注于头部，见 §7）：install-runsc.sh / install-microsandbox.sh / install-postgres.sh / install-redis.sh / provision-test-db.sh / setup-kvm-linux.sh
 ├── tests/
 │   ├── unit/                        # 纯逻辑单测（statemachine / model / idempotency / seam / endpoints ...）
 │   ├── integration/                 # 真实进程/文件系统/本地 HTTP；conftest.py 提供 PG/Redis 可达性检查与多后端参数化 fixture
@@ -355,7 +357,7 @@ ADR 需覆盖的设计维度（按需取舍，至少明确其一）：
 
 - **启动**：`uv sync` → `whirlwind image build echo` → `whirlwind serve`（配置经 `whirlwind.toml` / `WHIRLWIND_*` env / CLI 分层注入，§3.5；`whirlwind config show` 自省生效配置；示例见 `deploy/whirlwind.example.toml`）
 - **后端切换**：`whirlwind serve --metadata-backend postgres --kv-backend redis` 或经 `[storage]` 配置分区（需 `whirlwind[postgres]` / `whirlwind[redis]` extras）
-- **生产后端依赖**：PostgreSQL / Redis 需本地可达；`tests/integration/conftest.py` 探测，不可达即 skip
+- **生产后端依赖**：PostgreSQL / Redis 需本地可达；`tests/integration/conftest.py` 探测，不可达即 skip。安装见 `scripts/setup/install-postgres.sh` / `install-redis.sh`；**默认测试 DSN 需 `whirlwind` 角色 + `whirlwind_test` 库（owner=role）**，装完服务用 `sudo scripts/setup/provision-test-db.sh`（幂等）补齐（hard 坑见 MEMORY「环境重置」）
 - **gVisor**：`runsc` 仅 Linux；无二进制或受限容器（无 `CAP_SYS_ADMIN`）自动降级 rootless + `--network=none`（rootless 不支持 restore，上游限制）；也验证过可装在 colima 的 Linux Docker VM 内作为 Docker runtime
 - **microsandbox**：libkrun 微 VM（`Isolation.LIGHT_VM`），驱动封装 `msb` CLI（安装：`scripts/setup/install-microsandbox.sh`，msb 0.6.8 macOS / 0.6.12 Linux 已验证）。**macOS（Apple Silicon HVF）已真实跑通生命周期套件 + benchmark（2026-08-20，19/19）**。Linux 需真实 `/dev/kvm`（宿主 kvm 模块 + 透传，open(2) 成功才算；libkrun 无 TCG 回退）。实测要点：`/tmp` 是 macOS 符号链接（bundle_root 必须 resolve、驱动已做）；msb 二进制符号链接影响 libkrunfw 查找（驱动已 resolve）；`MSB_HOME` 重定向到空目录会丢失 libkrunfw，驱动用解析后的二进制路径规避；`msb run --detach` 返回即 guest 就绪；驱动恒传 `--replace` 防静默复用陈旧 VM。详见 [ADR-0006](docs/adr/0006-microsandbox-driver.md)（ADR-0006）
 - **k3s / macOS**：`colima start --kubernetes`（底层 k3s）即为本地集群；无头沙箱里"不支持"多为执行环境假象，应先在真机/CLI 验证再下结论
