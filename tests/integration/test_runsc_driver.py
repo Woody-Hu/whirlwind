@@ -73,7 +73,13 @@ def _spec(tmp_path: Path, sandbox_id: str, argv: list[str] | None = None) -> San
     target.chmod(0o755)
     return SandboxSpec(
         sandbox_id=sandbox_id,
-        argv=argv or [str(target), "sh", "-c", "sleep 300"],
+        # Direct applet invocation (`busybox sleep 300`), NOT `sh -c "sleep 300"`:
+        # the bundle rootfs contains only the busybox binary — no applet
+        # symlinks — so a subshell would fail to find `sleep` on PATH, the init
+        # would exit 127, and the container would land in "stopped" before the
+        # first exec (first real-run exposure on the Linux container baseline,
+        # 2026-08-20; previously always skipped on macOS).
+        argv=argv or [str(target), "sleep", "300"],
         bundle_root=bundle,
         workspace=tmp_path / "sandboxes" / sandbox_id,
         env={"PATH": "/bin"},
@@ -111,7 +117,7 @@ def test_render_oci_config_maps_paths_into_rootfs(tmp_path: Path) -> None:
     assert config["ociVersion"] == "1.0.2"
     # argv translated from host-absolute to rootfs-relative
     payload_name = _payload().name
-    assert config["process"]["args"] == [f"/bin/{payload_name}", "sh", "-c", "sleep 300"]
+    assert config["process"]["args"] == [f"/bin/{payload_name}", "sleep", "300"]
     # workspace bind-mounted at the process cwd
     assert config["process"]["cwd"] == "/workspace"
     bind_sources = {m["source"] for m in config["mounts"] if m.get("type") == "bind"}
